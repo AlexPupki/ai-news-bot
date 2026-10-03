@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Алексей лох</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(120,90,255,.28), transparent 35%),
+        radial-gradient(circle at 80% 70%, rgba(255,70,150,.20), transparent 35%),
+        #09090d;
+      color: white;
+      font-family: Inter, Arial, sans-serif;
+      overflow: hidden;
+    }
+    .noise {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .07;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E");
+    }
+    .card {
+      width: min(920px, 92vw);
+      padding: 70px 38px;
+      text-align: center;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 34px;
+      background: rgba(255,255,255,.055);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 25px 100px rgba(0,0,0,.5);
+      position: relative;
+    }
+    .badge {
+      display: inline-block;
+      padding: 8px 13px;
+      border-radius: 999px;
+      font-size: 13px;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      color: #cfcaff;
+      background: rgba(130,100,255,.12);
+      border: 1px solid rgba(160,140,255,.25);
+      margin-bottom: 22px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(56px, 12vw, 145px);
+      line-height: .88;
+      letter-spacing: -.07em;
+      text-transform: uppercase;
+      background: linear-gradient(90deg, #fff, #bcaeff 35%, #ff92ca 70%, #fff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(0 12px 34px rgba(150,110,255,.2));
+      animation: pulse 3s ease-in-out infinite;
+    }
+    p {
+      font-size: clamp(18px, 2.2vw, 28px);
+      color: #b7b7c6;
+      margin: 30px auto 0;
+      max-width: 650px;
+      line-height: 1.45;
+    }
+    button {
+      margin-top: 34px;
+      border: 0;
+      padding: 16px 24px;
+      border-radius: 16px;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      color: #09090d;
+      background: white;
+      transition: .2s ease;
+      box-shadow: 0 14px 38px rgba(255,255,255,.12);
+    }
+    button:hover { transform: translateY(-2px) scale(1.02); }
+    button:active { transform: scale(.98); }
+    .secret {
+      margin-top: 24px;
+      min-height: 34px;
+      font-size: 22px;
+      font-weight: 700;
+      color: #fff;
+    }
+    @keyframes pulse {
+      50% { transform: scale(1.015); filter: drop-shadow(0 15px 42px rgba(255,110,180,.24)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="noise"></div>
+  <main class="card">
+    <div class="badge">официальный сайт</div>
+    <h1>АЛЕКСЕЙ<br>ЛОХ</h1>
+    <p>Независимое исследование завершено. Результаты подтверждены лично Алексеем.</p>
+    <button onclick="document.getElementById('secret').textContent='😂 Подтверждено на 100%'">Проверить ещё раз</button>
+    <div class="secret" id="secret"></div>
+  </main>
+</body>
+</html>
