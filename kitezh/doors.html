@@ -102,6 +102,8 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:4px}
   <div class="buttons">
     <button id="toggle" class="pill">Открыть двери</button>
     <button id="enter" class="pill gold" hidden>Войти в град</button>
+    <button id="back" class="pill" hidden aria-label="Назад по каналу">▼ Назад</button>
+    <button id="fwd" class="pill gold" hidden aria-label="Вперёд по каналу">Вперёд ▲</button>
     <button id="exit" class="pill" hidden>Выйти</button>
   </div>
 </div>
@@ -503,6 +505,10 @@ function boot(imgGate, imgCity) {
 
   /* ============================== СЦЕНА 2: ГРАД ============================== */
 
+  // Город — не плоская картинка, а простая 3D-коробка канала в метрах: вода, причалы,
+  // стены домов, дальняя стена с мостом и небо. Фото проецируется на неё из той же камеры,
+  // которой оно «снято», поэтому из исходной точки кадр совпадает с картинкой,
+  // а при движении вперёд по каналу всё смещается как в настоящем 3D.
   const city = (() => {
     const scene = new THREE.Scene();
 
@@ -517,8 +523,52 @@ function boot(imgGate, imgCity) {
     const MOON = [692, 105];
     const VP = [520, 376];
 
+    // Камера фото: фокус 613 px, главная точка у точки схода канала, глаз в 1,7 м над водой.
+    const F = 613, PX = 520, PY = 362, EYE = 1.7, PIER = 1.25;
+    const WALL_L = 8, WALL_R = 7.5, FAR = 60, SKY = 350, NEAR = 1.2;
+    const rayOf = (u, v) => [(u - PX) / F, -(v - PY) / F];
+    const toPx = (x, y, z) => [PX + F * x / -z, PY - F * y / -z];
+
+    // Области кадра и поверхности, на которые они ложатся.
+    const ZONES = {
+      under: [[445,322],[578,322],[578,372],[445,372]],
+      jetty: [[135,390],[470,384],[474,412],[330,424],[135,432]],
+      pier: [[722,392],[892,400],[892,446],[800,440],[722,424]],
+      far: [[422,280],[575,275],[578,240],[600,214],[640,212],[648,168],[656,212],[728,214],[732,262],[748,262],[748,398],[422,398]],
+      left: [[0,0],[135,0],[135,15],[180,14],[200,40],[262,146],[250,150],[250,205],[265,240],[280,236],[310,168],[340,236],[352,258],[388,196],[430,258],[422,280],[422,400],[135,410],[0,410]],
+      right: [[748,300],[807,262],[807,140],[812,82],[874,30],[884,80],[890,0],[1024,0],[1024,445],[890,445],[748,425]]
+    };
+    function inside(pts, x, y) {
+      let c = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const [xi, yi] = pts[i], [xj, yj] = pts[j];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+      }
+      return c;
+    }
+    function zoneOf(u, v) {
+      if (inside(ZONES.under, u, v)) return 'sky';
+      if (inside(ZONES.jetty, u, v)) return 'jetty';
+      if (inside(ZONES.pier, u, v)) return 'jetty';
+      if (inside(ZONES.far, u, v)) return 'far';
+      if (inside(ZONES.left, u, v)) return 'left';
+      if (inside(ZONES.right, u, v)) return 'right';
+      return v < PY + 0.5 ? 'sky' : 'water';
+    }
+    // Расстояние по оси взгляда до поверхности, на которую падает пиксель.
+    function distOf(zone, u, v) {
+      const [rx, ry] = rayOf(u, v);
+      let s;
+      if (zone === 'water') s = ry < -1e-4 ? EYE / -ry : SKY;
+      else if (zone === 'jetty') s = ry < -1e-4 ? PIER / -ry : SKY;
+      else if (zone === 'left') s = rx < -1e-3 ? Math.min(FAR, WALL_L / -rx) : FAR;
+      else if (zone === 'right') s = rx > 1e-3 ? Math.min(FAR, WALL_R / rx) : FAR;
+      else if (zone === 'far') s = FAR;
+      else s = SKY;
+      return Math.min(SKY, Math.max(1.5, s));
+    }
+
     // Две передние лодки: контур с гребцами, весло, ватерлиния и место отражения под корпусом.
-    // ax — середина корпуса, лодка «смотрит» носом вправо.
     const BOATS = [
       {
         rect: [374, 360, 462, 412], yc: 406, ax: 420,
@@ -533,64 +583,19 @@ function boot(imgGate, imgCity) {
         refl: [600, 414, 724, 434]
       }
     ];
-    const HORIZON = 352;
 
-    // Маски (R, G — лодки; B — что стереть с фона) и фото без лодок.
-    // Место под лодками заполняется заливкой от краёв (push-pull), рябь шейдера прячет мягкость.
-    function prepareBoats() {
+    const mkCanvas = () => { const c = document.createElement('canvas'); c.width = IW; c.height = IH; return c; };
+    const canvasTex = c => { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; return t; };
+    const polyPath = (g, pts) => { g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); };
+
+    // Заливка дыр push-pull: пирамида известных пикселей, затем заполнение сверху вниз.
+    function fillHoles(data, hole) {
       const w = IW, h = IH;
-      const mk = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
-      const drawBoat = (g, b, grow) => {
-        g.beginPath();
-        b.poly.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
-        g.closePath();
-        g.fill();
-        g.lineJoin = g.lineCap = 'round';
-        if (grow) { g.lineWidth = grow; g.stroke(); }
-        g.lineWidth = 3 + grow;
-        g.beginPath();
-        g.moveTo(...b.oar[0]);
-        g.lineTo(...b.oar[1]);
-        g.stroke();
-      };
-      const maskOf = (draw, blur) => {
-        const c = mk(), g = c.getContext('2d');
-        g.fillStyle = g.strokeStyle = '#fff';
-        draw(g);
-        const o = mk(), og = o.getContext('2d');
-        og.filter = `blur(${blur}px)`;
-        og.drawImage(c, 0, 0);
-        return og.getImageData(0, 0, w, h).data;
-      };
-      const mA = maskOf(g => drawBoat(g, BOATS[0], 0), 0.6);
-      const mB = maskOf(g => drawBoat(g, BOATS[1], 0), 0.6);
-      const mC = maskOf(g => BOATS.forEach(b => {
-        drawBoat(g, b, 7);
-        g.fillRect(b.refl[0], b.refl[1], b.refl[2] - b.refl[0], b.refl[3] - b.refl[1]);
-      }), 2);
-
-      const maskCanvas = mk();
-      const mg = maskCanvas.getContext('2d');
-      const md = mg.createImageData(w, h);
-      for (let i = 0; i < w * h * 4; i += 4) {
-        md.data[i] = mA[i + 3];
-        md.data[i + 1] = mB[i + 3];
-        md.data[i + 2] = mC[i + 3];
-        md.data[i + 3] = 255;
-      }
-      mg.putImageData(md, 0, 0);
-
-      const photo = mk();
-      const pg = photo.getContext('2d');
-      pg.drawImage(imgCity, 0, 0);
-      const img = pg.getImageData(0, 0, w, h);
-
-      // Push-pull: уменьшаем известные пиксели пирамидой, затем заполняем дыры сверху вниз.
       let L = { w, h, c: new Float32Array(w * h * 3), k: new Float32Array(w * h) };
       for (let i = 0; i < w * h; i++) {
-        const k = 1 - mC[i * 4 + 3] / 255;
+        const k = 1 - hole[i];
         L.k[i] = k;
-        for (let ch = 0; ch < 3; ch++) L.c[i * 3 + ch] = img.data[i * 4 + ch] * k;
+        for (let ch = 0; ch < 3; ch++) L.c[i * 3 + ch] = data[i * 4 + ch] * k;
       }
       const levels = [L];
       while (L.w > 2 && L.h > 2) {
@@ -632,52 +637,93 @@ function boot(imgGate, imgCity) {
         }
       }
       const base = levels[0];
-      for (let i = 0; i < w * h; i++) for (let ch = 0; ch < 3; ch++) img.data[i * 4 + ch] = base.c[i * 3 + ch];
-      pg.putImageData(img, 0, 0);
-
-      const tex = c => { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; return t; };
-      return { clean: tex(photo), mask: tex(maskCanvas) };
+      for (let i = 0; i < w * h; i++) for (let ch = 0; ch < 3; ch++) data[i * 4 + ch] = base.c[i * 3 + ch];
     }
-    const boatPrep = prepareBoats();
+
+    // Текстуры: город без лодок, небо без домов и маски лодок.
+    function prepare() {
+      const maskOf = (draw, blur) => {
+        const c = mkCanvas(), g = c.getContext('2d');
+        g.fillStyle = g.strokeStyle = '#fff';
+        draw(g);
+        const o = mkCanvas(), og = o.getContext('2d');
+        og.filter = `blur(${blur}px)`;
+        og.drawImage(c, 0, 0);
+        return og.getImageData(0, 0, IW, IH).data;
+      };
+      const drawBoat = (g, b, grow) => {
+        polyPath(g, b.poly);
+        g.fill();
+        g.lineJoin = g.lineCap = 'round';
+        if (grow) { g.lineWidth = grow; g.stroke(); }
+        g.lineWidth = 3 + grow;
+        g.beginPath();
+        g.moveTo(...b.oar[0]);
+        g.lineTo(...b.oar[1]);
+        g.stroke();
+      };
+      const mA = maskOf(g => drawBoat(g, BOATS[0], 0), 0.6);
+      const mB = maskOf(g => drawBoat(g, BOATS[1], 0), 0.6);
+      const mC = maskOf(g => BOATS.forEach(b => {
+        drawBoat(g, b, 7);
+        g.fillRect(b.refl[0], b.refl[1], b.refl[2] - b.refl[0], b.refl[3] - b.refl[1]);
+      }), 2);
+      const mSky = maskOf(g => {
+        g.fillRect(0, PY - 4, IW, IH);
+        for (const k of ['jetty', 'pier', 'far', 'left', 'right']) { polyPath(g, ZONES[k]); g.fill(); }
+        // Под мостом — даль, она остаётся на куполе как есть: вырезаем её из маски.
+        g.globalCompositeOperation = 'destination-out';
+        polyPath(g, ZONES.under);
+        g.fill();
+      }, 1);
+
+      const maskCanvas = mkCanvas();
+      const mg = maskCanvas.getContext('2d');
+      const md = mg.createImageData(IW, IH);
+      for (let i = 0; i < IW * IH * 4; i += 4) {
+        md.data[i] = mA[i + 3];
+        md.data[i + 1] = mB[i + 3];
+        md.data[i + 2] = mC[i + 3];
+        md.data[i + 3] = 255;
+      }
+      mg.putImageData(md, 0, 0);
+
+      const holes = (m, grow = 1) => { const a = new Float32Array(IW * IH); for (let i = 0; i < a.length; i++) a[i] = Math.min(1, m[i * 4 + 3] / 255 * grow); return a; };
+
+      const cityCanvas = mkCanvas();
+      const cg = cityCanvas.getContext('2d');
+      cg.drawImage(imgCity, 0, 0);
+      const ci = cg.getImageData(0, 0, IW, IH);
+      fillHoles(ci.data, holes(mC));
+      cg.putImageData(ci, 0, 0);
+
+      const skyCanvas = mkCanvas();
+      const sg = skyCanvas.getContext('2d');
+      sg.drawImage(imgCity, 0, 0);
+      const si = sg.getImageData(0, 0, IW, IH);
+      fillHoles(si.data, holes(mSky, 1.5));
+      sg.putImageData(si, 0, 0);
+
+      return { city: canvasTex(cityCanvas), sky: canvasTex(skyCanvas), mask: canvasTex(maskCanvas) };
+    }
+    const tex = prepare();
 
     const ripples = Array.from({ length: 10 }, () => new THREE.Vector3(0, 0, -99));
     const bells = BELLS.map(([x, y]) => new THREE.Vector3(x, y, -99));
 
     const uni = {
-      uMap: { value: boatPrep.clean },
+      uMap: { value: tex.city },
       uOrig: { value: photoTexture(imgCity) },
-      uBoatMask: { value: boatPrep.mask },
+      uBoatMask: { value: tex.mask },
       uBoats: { value: [new THREE.Vector4(), new THREE.Vector4()] },
       uTime: clock,
       uLamps: { value: lamps },
       uRip: { value: ripples },
       uBell: { value: bells },
-      uMoon: { value: 0 },
-      uCamRef: { value: new THREE.Vector3(0, 0, 10) }
+      uMoon: { value: 0 }
     };
 
-    // Глубина кадра по пикселю фото: створки и порог близко, вода к нам, небо и даль далеко.
-    const depthGlsl = `
-      uniform vec3 uCamRef;
-      float depthAt(vec2 px) {
-        float side = max(smoothstep(330.0, 150.0, px.x), smoothstep(720.0, 880.0, px.x));
-        float near = smoothstep(380.0, 525.0, px.y);
-        float sky = smoothstep(300.0, 220.0, px.y) * (1.0 - side);
-        return mix(-1.3, 0.0, max(side * 0.85, near)) - 0.5 * sky;
-      }
-      // Сдвиг вдоль луча исходной камеры: в покое кадр совпадает с фото, при движении появляется параллакс.
-      vec3 place(vec3 p, float d) { return p + normalize(p - uCamRef) * (-d); }
-    `;
-    function depthAt(px, py) {
-      const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-      const side = Math.max(ss(330, 150, px), ss(720, 880, px));
-      const near = ss(380, 525, py);
-      const sky = ss(300, 220, py) * (1 - side);
-      return -1.3 + 1.3 * Math.max(side * 0.85, near) - 0.5 * sky;
-    }
-    const FG_DEPTH = 0.45;
-
-    const common = glsl + depthGlsl + `
+    const common = glsl + `
       uniform sampler2D uMap;
       uniform vec3 uLamps[10];
       uniform vec3 uRip[10];
@@ -686,20 +732,7 @@ function boot(imgGate, imgCity) {
       uniform float uMoon;
     `;
 
-    // Задний план: город и вода. Под створками, цепями и порогом подставлены соседние пиксели,
-    // чтобы при параллаксе из-за переднего плана не выглядывали их копии.
-    const bgGeo = new THREE.PlaneGeometry(IW / 100, IH / 100, 200, 112);
-    const bg = new THREE.Mesh(bgGeo, new THREE.ShaderMaterial({
-      uniforms: uni,
-      vertexShader: depthGlsl + `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          vec2 px = vec2(uv.x * 1024.0, (1.0 - uv.y) * 572.0);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(place(position, depthAt(px)), 1.0);
-        }
-      `,
-      fragmentShader: common + `
+    const bgFrag = common + `
         varying vec2 vUv;
         float segDist(vec2 p, vec2 a, vec2 b, out vec2 n) {
           vec2 ab = b - a;
@@ -714,10 +747,9 @@ function boot(imgGate, imgCity) {
           float d2 = segDist(px, b, c, n2);
           vec2 n = d1 < d2 ? n1 : n2;
           float d = min(d1, d2);
-          if (d < 11.0) {
-            float s = sign(dot(px - b, n) + 0.001);
-            px += n * s * (22.0 - d);
-          }
+          // Плавное сжатие полосы вокруг цепи, без резкого шва.
+          float s = sign(dot(px - b, n) + 0.001);
+          px += n * s * 22.0 * (1.0 - smoothstep(0.0, 22.0, d));
           return px;
         }
         void main() {
@@ -725,8 +757,8 @@ function boot(imgGate, imgCity) {
           vec2 sp = px;
           float leftEdge = mix(142.0, 130.0, clamp(px.y / 520.0, 0.0, 1.0));
           float rightEdge = mix(892.0, 906.0, clamp((px.y - 300.0) / 220.0, 0.0, 1.0));
-          if (sp.x < leftEdge + 3.0) sp.x = leftEdge + 4.0 + (leftEdge - sp.x) * 0.15;
-          if (sp.x > rightEdge - 3.0) sp.x = rightEdge - 4.0 - (sp.x - rightEdge) * 0.15;
+          if (sp.x < leftEdge + 3.0) sp.x = leftEdge + 4.0 + (leftEdge - sp.x) * 0.9;
+          if (sp.x > rightEdge - 3.0) sp.x = rightEdge - 4.0 - (sp.x - rightEdge) * 0.9;
           if (sp.y > 525.0) sp.y = 521.0 - (sp.y - 525.0) * 0.3;
           if (sp.y < 16.0) sp.y = 20.0 + (16.0 - sp.y) * 0.3;
           sp = hideChain(sp, vec2(139.0, 288.0), vec2(192.0, 420.0), vec2(232.0, 492.0));
@@ -776,6 +808,9 @@ function boot(imgGate, imgCity) {
           }
 
           vec3 c = texture2D(uMap, vec2(sp.x / 1024.0, 1.0 - sp.y / 572.0)).rgb;
+          // Под створками на фото ничего нет: эти края уходят в ночную тень у стен.
+          float unseen = max(smoothstep(-6.0, 34.0, leftEdge - px.x), smoothstep(-6.0, 34.0, px.x - rightEdge));
+          c *= 1.0 - 0.88 * unseen;
 
           float k = 0.0;
           for (int i = 0; i < 10; i++) k += flickerK(px, uLamps[i]);
@@ -827,111 +862,140 @@ function boot(imgGate, imgCity) {
 
           gl_FragColor = vec4(c, 1.0);
         }
-      `
+      `;
+
+    // Сетка по пикселям фото: каждая вершина стоит на своей поверхности вдоль луча камеры.
+    function surfaceGeometry(flat) {
+      const GX = 320, GY = 180;
+      const n = (GX + 1) * (GY + 1);
+      const pos = new Float32Array(n * 3), uv = new Float32Array(n * 2), sky = new Uint8Array(n);
+      for (let j = 0; j <= GY; j++) for (let i = 0; i <= GX; i++) {
+        const k = j * (GX + 1) + i;
+        const u = i / GX * IW, v = j / GY * IH;
+        const zone = flat ? 'sky' : zoneOf(u, v);
+        const s = flat ? SKY : distOf(zone, u, v);
+        const [rx, ry] = rayOf(u, v);
+        pos.set([rx * s, ry * s, -s], k * 3);
+        uv.set([u / IW, 1 - v / IH], k * 2);
+        sky[k] = zone === 'sky' ? 1 : 0;
+      }
+      const idx = [];
+      for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++) {
+        const a = j * (GX + 1) + i, b = a + 1, c = a + GX + 1, d = c + 1;
+        // Небо живёт на дальнем куполе: края крыш режутся по нему, а не тянутся резиной.
+        if (!flat && (sky[a] || sky[b] || sky[c] || sky[d])) continue;
+        idx.push(a, c, b, b, c, d);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      return g;
+    }
+
+    const skyMesh = new THREE.Mesh(surfaceGeometry(true), new THREE.ShaderMaterial({
+      uniforms: { ...uni, uMap: { value: tex.sky } },
+      vertexShader: passUv,
+      fragmentShader: bgFrag
     }));
+    skyMesh.renderOrder = 0;
+    scene.add(skyMesh);
+
+    const bg = new THREE.Mesh(surfaceGeometry(false), new THREE.ShaderMaterial({
+      uniforms: uni,
+      vertexShader: passUv,
+      fragmentShader: bgFrag
+    }));
+    bg.renderOrder = 1;
     scene.add(bg);
 
-    // Передний план: створки, цепи и порог, вырезанные маской.
+    // Порог: створки, цепи и брус под ногами — в 1,2 м от глаза. Шагнув дальше, проходим сквозь них.
     function fgMask() {
-      const c = document.createElement('canvas');
-      c.width = IW;
-      c.height = IH;
+      const c = mkCanvas();
       const g = c.getContext('2d');
-      g.fillStyle = '#fff';
-      g.strokeStyle = '#fff';
-      const poly = pts => { g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.fill(); };
-      poly([[0,0],[150,0],[142,30],[137,300],[130,520],[130,572],[0,572]]);
-      poly([[1024,0],[880,0],[893,35],[890,300],[905,520],[905,572],[1024,572]]);
+      g.fillStyle = g.strokeStyle = '#fff';
+      polyPath(g, [[0,0],[150,0],[142,30],[137,300],[130,520],[130,572],[0,572]]);
+      g.fill();
+      polyPath(g, [[1024,0],[880,0],[893,35],[890,300],[905,520],[905,572],[1024,572]]);
+      g.fill();
       g.fillRect(0, 0, IW, 15);
       g.fillRect(0, 527, IW, IH - 527);
       g.lineWidth = 15;
-      g.lineCap = 'round';
-      g.lineJoin = 'round';
+      g.lineCap = g.lineJoin = 'round';
       for (const chain of [[[139,288],[192,420],[232,492]], [[886,278],[840,405],[798,496]]]) {
         g.beginPath();
         chain.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
         g.stroke();
       }
-      // Мягкий край, чтобы шов не читался.
-      const soft = document.createElement('canvas');
-      soft.width = IW;
-      soft.height = IH;
+      const soft = mkCanvas();
       const s = soft.getContext('2d');
       s.filter = 'blur(1.5px)';
       s.drawImage(c, 0, 0);
-      const t = new THREE.CanvasTexture(soft);
-      t.colorSpace = THREE.NoColorSpace;
-      return t;
+      return canvasTex(soft);
     }
-
     const fg = new THREE.Mesh(
-      new THREE.PlaneGeometry(IW / 100, IH / 100, 1, 1),
+      new THREE.PlaneGeometry(IW / F * NEAR, IH / F * NEAR),
       new THREE.ShaderMaterial({
-        uniforms: { ...uni, uMask: { value: fgMask() }, uDepth: { value: FG_DEPTH } },
+        uniforms: { ...uni, uFgMask: { value: fgMask() } },
         transparent: true,
         depthWrite: false,
-        vertexShader: depthGlsl + `
-          uniform float uDepth;
-          varying vec2 vUv;
-          void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(place(position, uDepth), 1.0); }
-        `,
+        depthTest: false,
+        vertexShader: passUv,
         fragmentShader: common + `
-          uniform sampler2D uMask;
+          uniform sampler2D uOrig, uFgMask;
           varying vec2 vUv;
           void main() {
-            float a = texture2D(uMask, vUv).r;
+            float a = texture2D(uFgMask, vUv).r;
             if (a < 0.01) discard;
             vec2 px = toPx(vUv);
-            vec3 c = texture2D(uMap, vUv).rgb;
+            vec3 c = texture2D(uOrig, vUv).rgb;
             float k = 0.0;
             for (int i = 0; i < 10; i++) k += flickerK(px, uLamps[i]);
-            c = applyFlicker(c, k);
-            gl_FragColor = vec4(c, a);
+            gl_FragColor = vec4(applyFlicker(c, k), a);
           }
         `
       })
     );
-    fg.renderOrder = 3;
+    fg.position.set((IW / 2 - PX) / F * NEAR, (PY - IH / 2) / F * NEAR, -NEAR);
+    fg.renderOrder = 5;
     scene.add(fg);
 
-    // Перевод точки на фото в мир с той же глубиной, что у заднего плана.
-    const camRef = uni.uCamRef.value;
-    const dir = new THREE.Vector3();
-    function placePx(px, py, out) {
-      out.set(X(px), Y(py), 0);
-      dir.copy(out).sub(camRef).normalize();
-      return out.addScaledVector(dir, -depthAt(px, py));
+    function waterPoint(px, py, out) {
+      const s = EYE * F / Math.max(0.5, py - PY);
+      const [rx] = rayOf(px, py);
+      return out.set(rx * s, -EYE, -s);
     }
 
-    // Искры над кострами.
+    // Искры над кострами — в метрах над настоящими кострами.
     const EMBERS = 110;
     const eSeeds = new Float32Array(EMBERS * 4);
-    for (let i = 0; i < EMBERS; i++) {
-      eSeeds.set([Math.random(), Math.random(), i % 3 === 0 ? 1 : 0, Math.random()], i * 4);
-    }
+    for (let i = 0; i < EMBERS; i++) eSeeds.set([Math.random(), Math.random(), i % 3 === 0 ? 1 : 0, Math.random()], i * 4);
     const eGeo = new THREE.BufferGeometry();
     eGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(EMBERS * 3), 3));
     eGeo.setAttribute('aSeed', new THREE.BufferAttribute(eSeeds, 4));
     const emberMat = new THREE.ShaderMaterial({
-      uniforms: { ...uni, uPx: { value: 1 } },
+      uniforms: {
+        uTime: clock,
+        uPx: { value: 1 },
+        uFire: { value: [new THREE.Vector3(-9.13, -0.6, -29.5), new THREE.Vector3(2.55, 0.5, -60)] }
+      },
       transparent: true,
       depthWrite: false,
-      depthTest: false,
       blending: THREE.AdditiveBlending,
-      vertexShader: depthGlsl + `
+      vertexShader: `
         attribute vec4 aSeed;
         uniform float uTime, uPx;
+        uniform vec3 uFire[2];
         varying float vA;
         void main() {
           float life = fract(uTime * (0.25 + aSeed.w * 0.3) + aSeed.x * 5.0);
-          vec2 fire = aSeed.z > 0.5 ? vec2(546.0, 356.0) : vec2(330.0, 374.0);
-          float scale = aSeed.z > 0.5 ? 0.6 : 1.0;
-          vec2 px = fire + vec2((aSeed.y - 0.5) * 10.0 + sin(uTime * 2.0 + aSeed.x * 30.0) * 6.0 * life,
-                                -life * 85.0 * scale);
-          vec3 base = vec3((px.x - 512.0) / 100.0, (286.0 - px.y) / 100.0, 0.0);
-          vec4 mv = modelViewMatrix * vec4(place(base, depthAt(fire)), 1.0);
+          float big = aSeed.z > 0.5 ? 1.6 : 1.0;
+          vec3 p = aSeed.z > 0.5 ? uFire[1] : uFire[0];
+          p += vec3((aSeed.y - 0.5) * 0.3 * big + sin(uTime * 2.0 + aSeed.x * 30.0) * 0.25 * life * big,
+                    life * 2.6 * big, (aSeed.x - 0.5) * 0.3);
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
           vA = (1.0 - life) * smoothstep(0.0, 0.1, life);
-          gl_PointSize = (1.5 + aSeed.y * 2.5) * uPx * scale * (9.0 / -mv.z);
+          gl_PointSize = (1.5 + aSeed.y * 2.5) * uPx * (32.0 / -mv.z) * big;
           gl_Position = projectionMatrix * mv;
         }
       `,
@@ -945,7 +1009,7 @@ function boot(imgGate, imgCity) {
     });
     const embers = new THREE.Points(eGeo, emberMat);
     embers.frustumCulled = false;
-    embers.renderOrder = 1;
+    embers.renderOrder = 2;
     scene.add(embers);
 
     // Огоньки на воде: свеча в плошке и её отражение в одном квадрате.
@@ -996,15 +1060,16 @@ function boot(imgGate, imgCity) {
     });
     const lightMesh = new THREE.InstancedMesh(lightGeo, lightMat, MAX_LIGHTS);
     lightMesh.frustumCulled = false;
-    lightMesh.renderOrder = 2;
+    lightMesh.renderOrder = 3;
     lightMesh.count = 0;
     scene.add(lightMesh);
 
     const lights = [];
     const m4 = new THREE.Matrix4();
-    const pos = new THREE.Vector3();
-    const quat = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
+    const tmpV = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpS = new THREE.Vector3();
+    const yAxis = new THREE.Vector3(0, 1, 0);
 
     function launch(px, py) {
       if (lights.length >= MAX_LIGHTS) lights.shift();
@@ -1016,21 +1081,22 @@ function boot(imgGate, imgCity) {
       });
     }
 
-    function updateLights() {
+    function updateLights(cam) {
       const now = clock.value;
       for (let i = lights.length - 1; i >= 0; i--) if (now - lights[i].born > lights[i].life) lights.splice(i, 1);
+      tmpQ.setFromAxisAngle(yAxis, cam.rotation.y);
       lights.forEach((l, i) => {
         const u = (now - l.born) / l.life;
         const e = 1 - Math.pow(1 - u, 1.6);
         const px = l.x0 + (l.tx - l.x0) * e + Math.sin(now * 0.4 + l.phase * 9) * 6 * (1 - u) * l.drift;
-        const py = l.y0 + (l.ty - l.y0) * e + Math.sin(now * 1.3 + l.phase * 5) * 0.8;
-        const persp = 0.25 + 0.75 * Math.min(1, Math.max(0, (py - 370) / 150));
-        placePx(px, py, pos);
-        scl.set(0.34 * persp, 0.34 * persp, 1);
-        m4.compose(pos, quat, scl);
+        const py = l.y0 + (l.ty - l.y0) * e;
+        waterPoint(px, py, tmpV);
+        tmpV.y += Math.sin(now * 1.3 + l.phase * 5) * 0.03;
+        tmpS.set(0.55, 0.55, 1);
+        m4.compose(tmpV, tmpQ, tmpS);
         lightMesh.setMatrixAt(i, m4);
         lightPhase[i] = l.phase;
-        lightAlpha[i] = Math.min(1, (now - l.born) * 2) * (1 - Math.pow(u, 3));
+        lightAlpha[i] = Math.min(1, (now - l.born) * 2) * (1 - Math.pow(u, 3)) * Math.min(1, Math.max(0, (cam.position.z - tmpV.z) - 0.8));
       });
       lightMesh.count = lights.length;
       lightMesh.instanceMatrix.needsUpdate = true;
@@ -1044,13 +1110,15 @@ function boot(imgGate, imgCity) {
       ripIndex = (ripIndex + 1) % ripples.length;
     }
 
-    // ЛОДКИ: вырезанные из фото, с отражением, которое рисуется в том же квадрате ниже ватерлинии.
+    // ЛОДКИ: вырезанные из фото карточки, стоящие на воде в метрах; отражение в том же квадрате.
     const boats = BOATS.map((b, i) => {
       const topH = b.yc - b.rect[1];
       const refH = Math.round(topH * 0.9);
       const wpx = b.rect[2] - b.rect[0];
-      const geo = new THREE.PlaneGeometry(wpx / 100, (topH + refH) / 100)
-        .translate(((b.rect[0] + b.rect[2]) / 2 - b.ax) / 100, (topH - refH) / 200, 0);
+      const s0 = EYE * F / (b.yc - PY);
+      const mpp = s0 / F;
+      const geo = new THREE.PlaneGeometry(wpx * mpp, (topH + refH) * mpp)
+        .translate(((b.rect[0] + b.rect[2]) / 2 - b.ax) * mpp, (topH - refH) / 2 * mpp, 0);
       const bu = {
         uTime: clock,
         uOrig: uni.uOrig,
@@ -1107,27 +1175,18 @@ function boot(imgGate, imgCity) {
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
+      mesh.userData.boat = i;
       scene.add(mesh);
+      const [rx] = rayOf(b.ax, b.yc);
       return {
-        def: b, mesh, u: bu, topH, wpx, i,
-        x: b.ax, y: b.yc, home: [b.ax, b.yc],
-        target: null, face: 1, faceV: 1, vx: 0, vy: 0, idle: 6 * i, phase: i * 1.7, lastStroke: 0
+        def: b, mesh, u: bu, i, refFrac: refH / (topH + refH), len: wpx * mpp,
+        x: rx * s0, z: -s0, home: [rx * s0, -s0],
+        target: null, face: 1, faceV: 1, speed: 0, idle: 6 * i, phase: i * 1.7, lastStroke: 0,
+        px: [b.ax, b.yc]
       };
     });
 
-    const persp = (b, y) => Math.min(1.6, Math.max(0.12, (y - HORIZON) / (b.def.yc - HORIZON)));
     let selected = -1;
-
-    function boatAt(p) {
-      if (!p) return -1;
-      for (let k = boats.length - 1; k >= 0; k--) {
-        const b = boats[k];
-        const s = persp(b, b.y);
-        const half = b.wpx * 0.5 * s;
-        if (Math.abs(p.x - b.x) < half && p.y < b.y + 6 * s && p.y > b.y - b.topH * s) return k;
-      }
-      return -1;
-    }
 
     function select(k) {
       selected = selected === k ? -1 : k;
@@ -1135,10 +1194,16 @@ function boot(imgGate, imgCity) {
       return selected;
     }
 
+    const isWater = p => p && p.x > 150 && p.x < 880 && p.y < 522 &&
+      (p.y > 418 || (p.y > 386 && p.x > 462 && p.x < 640));
+    const bellAt = p => p ? BELLS.findIndex(([x, y]) => Math.hypot(p.x - x, p.y - y) < 48) : -1;
+    const isMoon = p => p && Math.hypot(p.x - MOON[0], p.y - MOON[1]) < 45;
+
     function sendBoat(px, py) {
       if (selected < 0) return false;
       const b = boats[selected];
-      b.target = [px, py];
+      waterPoint(px, py, tmpV);
+      b.target = [tmpV.x, tmpV.z];
       b.idle = 0;
       select(selected);
       return true;
@@ -1147,85 +1212,124 @@ function boot(imgGate, imgCity) {
     function randomWater() {
       for (let n = 0; n < 40; n++) {
         const p = { x: 240 + Math.random() * 560, y: 388 + Math.random() * 120 };
-        if (isWater(p)) return [p.x, p.y];
+        if (isWater(p)) { waterPoint(p.x, p.y, tmpV); return [tmpV.x, tmpV.z]; }
       }
-      return [520, 440];
+      return [0, -25];
     }
 
     let onStroke = () => {};
-    const bpos = new THREE.Vector3();
-    function updateBoats(dt) {
+    function updateBoats(dt, cam) {
       const t = clock.value;
       boats.forEach(b => {
-        const s = persp(b, b.y);
         let moving = false;
         if (b.target) {
-          // Расстояние считаем «по воде»: вертикаль на фото сжата перспективой.
-          const dx = b.target[0] - b.x;
-          const dy = (b.target[1] - b.y) / 0.32;
-          const dist = Math.hypot(dx, dy) / s;
-          if (dist < 4) {
+          const dx = b.target[0] - b.x, dz = b.target[1] - b.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 0.4) {
             b.target = null;
-            ripple(b.x, b.y);
+            ripple(...b.px);
           } else {
             moving = true;
             // Рывок на каждый гребок, затем накат.
             const stroke = Math.sin(t * 2.4 + b.phase);
-            const v = (10 + 26 * Math.pow(Math.max(0, stroke), 2)) * s;
-            const step = Math.min(v * dt, dist * s);
-            const gx = dx / Math.hypot(dx, dy), gy = dy / Math.hypot(dx, dy);
-            b.vx = gx * v;
-            b.vy = gy * v * 0.32;
-            b.x += gx * step;
-            b.y += gy * step * 0.32;
-            if (Math.abs(gx) > 0.3) b.face = Math.sign(gx);
+            b.speed = 0.6 + 1.9 * Math.pow(Math.max(0, stroke), 2);
+            const step = Math.min(b.speed * dt, dist);
+            b.x += dx / dist * step;
+            b.z += dz / dist * step;
+            if (Math.abs(dx / dist) > 0.3) b.face = Math.sign(dx);
             if (stroke > 0.95 && t - b.lastStroke > 1) {
               b.lastStroke = t;
-              ripple(b.x - b.face * b.wpx * 0.25 * s, b.y + 1);
-              onStroke(s);
+              const [sx, sy] = toPx(b.x - b.face * b.len * 0.3, -EYE, b.z);
+              ripple(sx, sy + 1);
+              onStroke(Math.min(1, 15 / -b.z));
             }
           }
         }
         if (!moving) {
-          b.vx *= Math.exp(-dt * 2);
-          b.vy *= Math.exp(-dt * 2);
+          b.speed *= Math.exp(-dt * 2);
           if (selected !== b.i) b.idle += dt;
           // Без участия зрителя лодки иногда сами отправляются в путь или возвращаются к причалу.
           if (b.idle > 22 + b.i * 9) {
             b.idle = 0;
-            const far = Math.hypot(b.x - b.home[0], b.y - b.home[1]) > 20;
+            const far = Math.hypot(b.x - b.home[0], b.z - b.home[1]) > 2;
             b.target = far && Math.random() < 0.5 ? b.home.slice() : randomWater();
           }
         }
         b.faceV += (b.face - b.faceV) * (1 - Math.exp(-dt * 1.6));
 
-        const bob = Math.sin(t * 1.3 + b.phase * 2) * 0.9 * s;
-        const d = depthAt(b.x, b.y + bob);
-        placePx(b.x, b.y + bob, bpos);
-        const L = Math.hypot(X(b.x) - camRef.x, Y(b.y) - camRef.y, camRef.z);
-        const k = s * (L - d) / L;
-        b.mesh.position.copy(bpos);
-        b.mesh.scale.set(k * b.faceV, k, 1);
-        b.mesh.rotation.z = Math.sin(t * 1.1 + b.phase) * 0.018 + (moving ? -b.face * 0.01 : 0);
-        b.mesh.renderOrder = 2.1 + b.y / 10000;
-        b.u.uFog.value = Math.min(0.6, Math.max(0, (398 - b.y) / 26) * 0.6);
-        b.u.uAlpha.value = Math.min(1, Math.max(0, (b.y - 364) / 12));
-        uni.uBoats.value[b.i].set(b.x, b.y, b.vx, b.vy);
+        const bob = Math.sin(t * 1.3 + b.phase * 2) * 0.035;
+        b.mesh.position.set(b.x, -EYE + bob, b.z);
+        b.mesh.rotation.set(0, cam.rotation.y, Math.sin(t * 1.1 + b.phase) * 0.018 + (moving ? -b.face * 0.01 : 0), 'YXZ');
+        b.mesh.scale.set(b.faceV, 1, 1);
+        const depth = cam.position.z - b.z;
+        b.mesh.visible = depth > 1;
+        b.mesh.renderOrder = 4 - depth / 1000;
+        b.u.uFog.value = Math.min(0.6, Math.max(0, (depth - 30) / 40));
+        b.u.uAlpha.value = Math.min(1, Math.max(0, (75 - depth) / 15));
+
+        // Для следа и кругов на воде — положение и скорость лодки в пикселях фото.
+        const [px, py] = toPx(b.x, -EYE, b.z);
+        const vpx = (px - b.px[0]) / Math.max(dt, 1e-3), vpy = (py - b.px[1]) / Math.max(dt, 1e-3);
+        b.px = [px, py];
+        uni.uBoats.value[b.i].set(px, py, moving ? vpx : 0, moving ? vpy : 0);
       });
     }
 
-    const isWater = p => p && p.x > 150 && p.x < 880 && p.y < 522 &&
-      (p.y > 418 || (p.y > 386 && p.x > 462 && p.x < 640));
-    const bellAt = p => p ? BELLS.findIndex(([x, y]) => Math.hypot(p.x - x, p.y - y) < 48) : -1;
-    const isMoon = p => p && Math.hypot(p.x - MOON[0], p.y - MOON[1]) < 45;
+    // КАМЕРА: та же оптика, что у фото; движется вперёд по каналу.
+    const cam = new THREE.PerspectiveCamera(2 * Math.atan(PY / F) * 180 / Math.PI, (2 * PX) / (2 * PY), 0.05, 2000);
+    cam.rotation.order = 'YXZ';
+    let dist = 0, distTarget = 0, view = { w: 1, h: 1, s: 1 };
+    const MAX_DIST = 6;
+
+    function fit(w, h) {
+      // Фото покрывает экран с запасом 10%, чтобы камере было куда поворачивать.
+      const s = Math.max(w / IW, h / IH) / 0.9;
+      view = { w, h, s };
+      cam.aspect = PX / PY;
+      cam.setViewOffset(2 * PX * s, 2 * PY * s, (IW / 2 - w / (2 * s)) * s, (IH / 2 - h / (2 * s)) * s, w, h);
+      cam.updateProjectionMatrix();
+    }
+
+    const camTarget = new THREE.Vector3();
+    function updateCamera(dt, look, par, snap) {
+      dist += (distTarget - dist) * (1 - Math.exp(-dt * 1.1));
+      // До порога двигаться почти некуда: края фото близко. За дверями свободнее.
+      const free = Math.min(1, Math.max(0, (dist - 0.8) / 2));
+      const t = clock.value;
+      camTarget.set(
+        par * (look.x * (0.04 + 0.3 * free) + Math.sin(t * 0.21) * 0.02),
+        par * (look.y * (0.02 + 0.1 * free) + Math.sin(t * 0.17) * 0.015),
+        -dist
+      );
+      if (snap) cam.position.copy(camTarget); else cam.position.lerp(camTarget, 1 - Math.exp(-dt * 3));
+      cam.rotation.set(par * look.y * 0.018, -par * look.x * 0.03, 0);
+      cam.updateMatrixWorld();
+    }
+
+    // Что под указателем: лодка или точка фото на поверхностях.
+    const caster = new THREE.Raycaster();
+    function pick(ndc) {
+      caster.setFromCamera(ndc, cam);
+      const bh = caster.intersectObjects(boats.map(b => b.mesh), false)
+        .find(h => h.object.visible && h.uv && h.uv.y > boats[h.object.userData.boat].refFrac);
+      if (bh) return { boat: bh.object.userData.boat };
+      const hits = caster.intersectObjects([bg, skyMesh], false);
+      if (!hits.length || !hits[0].uv) return { px: null };
+      return { px: { x: hits[0].uv.x * IW, y: (1 - hits[0].uv.y) * IH } };
+    }
 
     return {
-      scene, uni, emberMat, launch, ripple, updateLights, isWater, bellAt, isMoon,
-      boatAt, select, sendBoat, updateBoats,
+      scene, uni, emberMat, cam, fit, pick, launch, ripple, isWater, bellAt, isMoon, select, sendBoat,
       hasSelection: () => selected >= 0,
       set onStroke(f) { onStroke = f; },
       ringBell: i => bells[i].setZ(clock.value),
-      lightCount: () => lights.length
+      arrive() { dist = 0; distTarget = 1.5; },
+      nudge(d) { distTarget = Math.min(MAX_DIST, Math.max(0, distTarget + d)); },
+      update(dt, look, par, snap) {
+        updateCamera(dt, look, par, snap);
+        updateLights(cam);
+        updateBoats(dt, cam);
+      }
     };
   })();
 
@@ -1389,17 +1493,17 @@ function boot(imgGate, imgCity) {
 
   /* ============================== ПЕРЕХОДЫ И ИНТЕРФЕЙС ============================== */
 
-  const st = { push: 0, enter: 0, arrive: 0, moon: 0 };
+  const st = { push: 0, enter: 0 };
   let where = 'gate';
   let isOpen = false, hover = false, busy = false;
 
   const ui = {
-    toggle: $('#toggle'), enter: $('#enter'), exit: $('#exit'),
+    toggle: $('#toggle'), enter: $('#enter'), exit: $('#exit'), fwd: $('#fwd'), back: $('#back'),
     legend: $('#legend'), subtitle: $('#subtitle'), flash: $('#flash')
   };
 
   const GATE_LEGEND = 'Говорят, в тихую ночь из-под воды слышен колокольный звон, а тем, кто чист сердцем, град открывает свои ворота.';
-  const CITY_LEGEND = 'Коснитесь лодки, а затем воды — она поплывёт туда. Вода пускает огонёк, башня — колокол, луна — дорожку.';
+  const CITY_LEGEND = 'Плывите по каналу кнопками или колесом. Лодка, затем вода — она поплывёт туда. Вода — огонёк, башня — колокол, луна — дорожка.';
   const BOAT_LEGEND = 'Лодка ждёт. Коснитесь воды, куда ей плыть.';
 
   function toggle() {
@@ -1447,17 +1551,16 @@ function boot(imgGate, imgCity) {
       opacity: 1, duration: 1.1 * K, delay: 1.3 * K, ease: 'power1.in',
       onComplete: () => {
         where = 'city';
-        st.arrive = 1;
+        city.arrive();
         hover = false;
         $('#stage').classList.remove('hot');
         ui.subtitle.textContent = 'По ту сторону ворот';
         ui.legend.textContent = CITY_LEGEND;
-        gsap.to(st, { arrive: 0, duration: 3.2 * K, ease: 'power2.out' });
         gsap.to(ui.flash, {
           opacity: 0, duration: 1.8 * K, ease: 'power1.out',
           onComplete: () => {
             busy = false;
-            ui.exit.hidden = false;
+            ui.exit.hidden = ui.fwd.hidden = ui.back.hidden = false;
             ui.legend.classList.add('on');
           }
         });
@@ -1471,7 +1574,7 @@ function boot(imgGate, imgCity) {
   function leaveCity() {
     if (busy || where !== 'city') return;
     busy = true;
-    ui.exit.hidden = true;
+    ui.exit.hidden = ui.fwd.hidden = ui.back.hidden = true;
     ui.legend.classList.remove('on');
     gsap.to(ui.flash, {
       opacity: 1, duration: 1.1 * K, ease: 'power1.in',
@@ -1509,8 +1612,11 @@ function boot(imgGate, imgCity) {
   const hit = new THREE.Vector3();
   const look = { x: 0, y: 0 };
 
+  let lastPick = 0;
+  const toNdc = e => ndc.set(e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2);
+
   function pointerToPx(e) {
-    ndc.set(e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2);
+    toNdc(e);
     ray.setFromCamera(ndc, camera);
     if (!ray.ray.intersectPlane(zPlane, hit)) return null;
     return { x: hit.x * 100 + IW / 2, y: IH / 2 - hit.y * 100 };
@@ -1521,27 +1627,35 @@ function boot(imgGate, imgCity) {
     look.x = e.clientX / innerWidth * 2 - 1;
     look.y = 1 - e.clientY / innerHeight * 2;
     if (busy) return;
-    const p = pointerToPx(e);
-    hover = where === 'gate' && gate.isOver(p);
-    const hot = hover || (where === 'city' && (city.boatAt(p) >= 0 || city.isWater(p) || city.bellAt(p) >= 0 || city.isMoon(p)));
-    stage.classList.toggle('hot', !!hot);
+    if (where === 'gate') {
+      hover = gate.isOver(pointerToPx(e));
+      stage.classList.toggle('hot', !!hover);
+      return;
+    }
+    // Луч по сцене города дорогой, поэтому не чаще раза в 100 мс.
+    const now = performance.now();
+    if (now - lastPick < 100) return;
+    lastPick = now;
+    const h = city.pick(toNdc(e));
+    const q = h.px;
+    stage.classList.toggle('hot', h.boat !== undefined || !!(city.isWater(q) || city.bellAt(q) >= 0 || city.isMoon(q)));
   });
   stage.addEventListener('pointerleave', () => { hover = false; look.x = look.y = 0; stage.classList.remove('hot'); });
   stage.addEventListener('click', e => {
     if (busy) return;
-    const p = pointerToPx(e);
     if (where === 'gate') {
-      if (gate.isOver(p)) toggle();
+      if (gate.isOver(pointerToPx(e))) toggle();
       return;
     }
     wakeSound();
-    const boat = city.boatAt(p);
-    if (boat >= 0) {
-      const sel = city.select(boat);
+    const h = city.pick(toNdc(e));
+    if (h.boat !== undefined) {
+      const sel = city.select(h.boat);
       ui.legend.textContent = sel >= 0 ? BOAT_LEGEND : CITY_LEGEND;
       noiseBurst(0.08, 300, 1.5, 0.08);
       return;
     }
+    const p = h.px;
     if (city.hasSelection() && city.isWater(p)) {
       city.sendBoat(p.x, p.y);
       city.ripple(p.x, p.y);
@@ -1562,6 +1676,20 @@ function boot(imgGate, imgCity) {
     }
   });
 
+  // Движение по каналу: кнопки, колесо и стрелки.
+  const STEP = 2;
+  ui.fwd.onclick = () => city.nudge(STEP);
+  ui.back.onclick = () => city.nudge(-STEP);
+  addEventListener('wheel', e => {
+    if (where !== 'city' || busy) return;
+    city.nudge(-e.deltaY * 0.012);
+  }, { passive: true });
+  addEventListener('keydown', e => {
+    if (where !== 'city' || busy) return;
+    if (e.key === 'ArrowUp' || e.key === 'w') city.nudge(STEP);
+    if (e.key === 'ArrowDown' || e.key === 's') city.nudge(-STEP);
+  });
+
   /* ============================== КАМЕРА И КАДР ============================== */
 
   let fitZ = 10;
@@ -1573,7 +1701,7 @@ function boot(imgGate, imgCity) {
     // Кадр чуть крупнее экрана, чтобы параллаксу было куда сдвигаться без пустых краёв.
     const visH = Math.min(IH / 100, (IW / 100) / camera.aspect) * 0.92;
     fitZ = visH / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-    city.uni.uCamRef.value.set(0, 0, fitZ);
+    city.fit(w, h);
     const px = renderer.getPixelRatio() * h / 800;
     gate.sparkMat.uniforms.uPx.value = px;
     city.emberMat.uniforms.uPx.value = px;
@@ -1627,19 +1755,7 @@ function boot(imgGate, imgCity) {
         if (snap) camPos.copy(tmp); else camPos.lerp(tmp, 1 - Math.exp(-dt * 3));
       }
     } else {
-      // В городе: лёгкое дыхание камеры, параллакс за указателем и отъезд после входа.
-      const a = st.arrive;
-      const z = fitZ * (1 - 0.42 * a);
-      const sway = par * 0.04;
-      const [cx, cy] = clampToPhoto(
-        look.x * 0.32 * par + Math.sin(clock.value * 0.21) * sway,
-        look.y * 0.14 * par + Math.sin(clock.value * 0.17) * sway * 0.5 + 0.12 * a,
-        z
-      );
-      tmp.set(cx, cy, z);
-      if (snap) camPos.copy(tmp); else camPos.lerp(tmp, 1 - Math.exp(-dt * 2.5));
-      city.updateLights();
-      city.updateBoats(dt);
+      city.update(dt, look, par, snap);
     }
 
     camera.position.copy(camPos);
@@ -1662,7 +1778,8 @@ function boot(imgGate, imgCity) {
       }
     }
 
-    renderer.render(where === 'gate' ? gate.scene : city.scene, camera);
+    if (where === 'gate') renderer.render(gate.scene, camera);
+    else renderer.render(city.scene, city.cam);
   }
 
   renderer.domElement.addEventListener('webglcontextlost', e => {
