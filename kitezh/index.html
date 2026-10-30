@@ -1,0 +1,1930 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07191d">
+<title>Китеж</title>
+<style>
+:root{color-scheme:dark;--ink:#07191d;--gold:#d4b880;--text:#f0eadc;--muted:#94a7a5;--line:#ffffff20}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--text);font-family:Arial,sans-serif;overflow:hidden}
+button,input{font:inherit}
+button{color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-offset:5px}
+#stage{position:fixed;inset:0;touch-action:none}
+#stage canvas{display:block;width:100%;height:100%}
+.veil{position:fixed;inset:0;pointer-events:none;background:linear-gradient(#041114b0,transparent 24%,transparent 67%,#041114ef),linear-gradient(90deg,#03101335,transparent 30%,transparent 70%,#03101335)}
+header{position:fixed;top:35px;left:42px;right:42px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none}
+.eyebrow{font-size:10px;letter-spacing:.29em;color:var(--gold);text-transform:uppercase}
+h1{font-family:Georgia,serif;font-weight:400;letter-spacing:.21em;font-size:clamp(32px,4.3vw,68px);margin:11px 0 7px}
+header p{margin:0;font-family:Georgia,serif;font-size:14px;letter-spacing:.05em;color:#c3d1cd}
+.tools{display:flex;gap:10px;pointer-events:auto}
+.round{background:#07191d80;border:1px solid var(--line);border-radius:99px;padding:12px 16px;font-size:10px;letter-spacing:.12em;backdrop-filter:blur(12px)}
+.round:hover{border-color:var(--gold)}
+.edition{position:fixed;right:40px;top:45%;writing-mode:vertical-rl;letter-spacing:.26em;font-size:9px;color:#b5c8c3}
+.caption{position:fixed;left:42px;bottom:208px;max-width:300px;pointer-events:none}
+.caption .number{font-family:Georgia,serif;font-size:30px;color:var(--gold)}
+.caption h2{font-family:Georgia,serif;font-weight:400;font-size:23px;margin:8px 0}
+.caption p{font-size:11px;line-height:1.7;color:#a9bdb7;margin:0}
+.dock{position:fixed;bottom:22px;left:40px;right:40px;background:#06171cba;backdrop-filter:blur(24px);border:1px solid #b3c6ba30;border-radius:3px;padding:0 22px 16px}
+.dock-head{display:flex;justify-content:space-between;padding:14px 0 10px;border-bottom:1px solid var(--line);font-size:9px;letter-spacing:.2em;color:var(--muted)}
+.live{color:var(--gold)}
+.live:before{content:'●';font-size:7px;margin-right:7px}
+nav{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin-top:5px}
+.tab{text-align:left;background:none;border:0;border-bottom:1px solid transparent;padding:14px 0;color:#91a5a1;font-size:10px;letter-spacing:.06em;white-space:nowrap}
+.tab b{color:#697f7d;font-weight:400;margin-right:8px}
+.tab.active{color:var(--text);border-color:var(--gold)}
+.tab.active b{color:var(--gold)}
+.controls{min-height:43px;padding-top:13px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;font-size:10px;color:#afc2bc}
+.control{display:flex;align-items:center;gap:12px}
+.control input{width:160px;accent-color:var(--gold);height:3px;cursor:ew-resize}
+.small{border:1px solid #b6c9bc38;background:#ffffff05;padding:7px 12px;border-radius:2px;font-size:10px}
+.small.active{border-color:var(--gold);color:var(--gold)}
+output{font-variant-numeric:tabular-nums;color:var(--gold);min-width:28px}
+.hint{margin-left:auto;font-size:9px;color:#819b95}
+.label{position:fixed;pointer-events:none;color:#d9c99d;font-size:10px;letter-spacing:.12em;background:#03181cce;padding:8px 12px;border-left:2px solid #d4b880;display:none}
+.divider{position:fixed;top:0;bottom:190px;width:1px;background:#e8d49b77;pointer-events:none;display:none}
+.divider span{position:absolute;top:48%;left:8px;font-size:9px;letter-spacing:.2em;background:#05191ebd;padding:8px;white-space:nowrap}
+#loading{position:fixed;inset:0;background:#07191d;z-index:10;display:grid;place-content:center;text-align:center;gap:16px;color:var(--gold);font:14px Georgia,serif;letter-spacing:.15em}
+#loading small{color:var(--muted);font:10px Arial;letter-spacing:.1em}
+#error{max-width:460px;line-height:1.8;padding:25px}
+#status{position:fixed;left:42px;bottom:183px;font-size:9px;color:#a0bab0;letter-spacing:.1em;pointer-events:none}
+.mobile-hint{display:none}
+@media(max-width:760px){
+  header{top:22px;left:20px;right:20px}
+  header p{font-size:11px;max-width:210px}
+  .eyebrow{font-size:8px}
+  h1{font-size:40px}
+  .round{padding:10px;font-size:9px}
+  .tools{gap:5px}
+  #reset{display:none}
+  .edition{right:15px;font-size:8px}
+  .dock{left:12px;right:12px;bottom:12px;padding:0 12px 12px}
+  nav{gap:8px;overflow-x:auto;grid-template-columns:repeat(5,max-content)}
+  .tab{font-size:9px;padding:13px 3px}
+  .tab b{margin-right:4px}
+  .controls{gap:10px;min-height:67px}
+  .control{gap:7px}
+  .control input{width:110px}
+  .hint{display:none}
+  .caption{left:20px;bottom:240px;max-width:220px}
+  .caption h2{font-size:21px}
+  .caption p{font-size:10px}
+  .caption .number{font-size:24px}
+  .dock-head{font-size:8px}
+  #status{left:20px;bottom:217px}
+  .divider{bottom:220px}
+  .label{font-size:8px}
+  .mobile-hint{display:inline}
+}
+</style>
+</head>
+<body>
+<div id="stage" aria-label="Интерактивный павильон на воде"></div>
+<div class="veil"></div>
+
+<header>
+  <div>
+    <div class="eyebrow">Процедурная легенда / Interactive study № 01</div>
+    <h1>КИТЕЖ</h1>
+    <p>Город, ушедший под воду</p>
+  </div>
+  <div class="tools">
+    <button id="reset" class="round" title="Вернуться к исходному виду">↺ СНАЧАЛА</button>
+    <button id="sound" class="round" aria-pressed="false">♫ ВКЛЮЧИТЬ ЗВУК</button>
+  </div>
+</header>
+
+<div class="edition">ОДИН КАДР · БЕСКОНЕЧНАЯ ГЛУБИНА</div>
+
+<div class="caption">
+  <div class="number" id="chapter">01 / 05</div>
+  <h2 id="chapterTitle">Там, где спит вода</h2>
+  <p id="chapterText">Проведите сквозь золотые цепи.<br>Разберите иллюзию на пять простых чудес.</p>
+</div>
+
+<div id="status" role="status">ДВИГАЙТЕ КУРСОР · КОСНИТЕСЬ ЦЕПЕЙ</div>
+<div class="divider" id="divider"><span>ДО ← → ПОСЛЕ</span></div>
+
+<div class="dock">
+  <div class="dock-head">
+    <span>АНАТОМИЯ ЖИВОГО КАДРА</span>
+    <span class="live" id="stats">2.5D / REALTIME</span>
+  </div>
+  <nav aria-label="Этапы пайплайна">
+    <button class="tab active" data-mode="0"><b>01</b> КАДР / ГЛУБИНА</button>
+    <button class="tab" data-mode="1"><b>02</b> РАЗЛЁТ СЛОЁВ</button>
+    <button class="tab" data-mode="2"><b>03</b> МАСКИ: ДО / ПОСЛЕ</button>
+    <button class="tab" data-mode="3"><b>04</b> КАМЕРА У ВРАТ</button>
+    <button class="tab" data-mode="4"><b>05</b> РЕНТГЕН-ФРОНТ</button>
+  </nav>
+  <div class="controls" id="controls"></div>
+</div>
+
+<div id="loading">
+  <div>К И Т Е Ж</div>
+  <small>Рисуем мир из света и глубины…</small>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+'use strict';
+
+// Все изображения создаются локально.
+// Только две библиотеки загружаются с CDN.
+const $ = s => document.querySelector(s);
+const TAU = Math.PI * 2;
+
+function fail(message) {
+  $('#loading').style.display = 'grid';
+  $('#loading').innerHTML = '<div id="error"></div>';
+  $('#error').textContent = message;
+}
+
+if (!window.THREE || !window.gsap) {
+  fail(
+    'Не удалось загрузить Three.js / GSAP. Для загрузки библиотек нужен интернет. ' +
+    'Сохраните файл и откройте его в браузере с доступом к CDN.'
+  );
+} else {
+  requestAnimationFrame(() => setTimeout(boot, 30));
+}
+
+function boot() {
+try {
+  let seed = 73129;
+
+  const rand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 1024;
+    return c;
+  }
+
+  // Текстуры квадратные, но рисунок использует виртуальный кадр 1024×576.
+  // При отображении на PlaneGeometry(16, 9) пропорции восстанавливаются.
+  function art() {
+    const c = canvas();
+    const g = c.getContext('2d');
+    g.scale(1, 1024 / 576);
+    return { c, g };
+  }
+
+  function gradient(g, x, y, r, color) {
+    const q = g.createRadialGradient(x, y, 0, x, y, r);
+    q.addColorStop(0, color);
+    q.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = q;
+    g.fillRect(x-r, y-r, 2*r, 2*r);
+  }
+
+  function poly(g, p, fill, stroke, width=1) {
+    g.beginPath();
+    p.forEach((v, i) => i ? g.lineTo(...v) : g.moveTo(...v));
+    g.closePath();
+
+    if (fill) {
+      g.fillStyle = fill;
+      g.fill();
+    }
+
+    if (stroke) {
+      g.strokeStyle = stroke;
+      g.lineWidth = width;
+      g.stroke();
+    }
+  }
+
+  function line(g, x, y, x2, y2, color, width=1) {
+    g.strokeStyle = color;
+    g.lineWidth = width;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x2, y2);
+    g.stroke();
+  }
+
+  function generateTextures() {
+    const sky = art();
+    const building = art();
+    const fore = art();
+    const depth = art();
+    const water = art();
+    const gold = art();
+    const lamps = art();
+    const leaves = art();
+    const atlas = art();
+
+    const s = sky.g;
+    const b = building.g;
+    const f = fore.g;
+    const d = depth.g;
+
+    // НЕБО
+    let bg = s.createLinearGradient(0, 0, 0, 576);
+    bg.addColorStop(0, '#03151e');
+    bg.addColorStop(.55, '#16464b');
+    bg.addColorStop(1, '#204d4e');
+
+    s.fillStyle = bg;
+    s.fillRect(0, 0, 1024, 576);
+
+    d.fillStyle = '#000';
+    d.fillRect(0, 0, 1024, 576);
+
+    gradient(s, 650, 160, 350, 'rgba(62,141,135,.35)');
+
+    for (let i=0; i<470; i++) {
+      const x = rand()*1024;
+      const y = rand()*350;
+      const r = rand()*1.1;
+
+      s.fillStyle = `rgba(211,226,207,${rand()*.65})`;
+      s.beginPath();
+      s.arc(x, y, r, 0, TAU);
+      s.fill();
+    }
+
+    gradient(s, 731, 108, 64, 'rgba(183,223,200,.14)');
+
+    s.fillStyle = '#bdd7c2';
+    s.beginPath();
+    s.arc(731, 108, 22, 0, TAU);
+    s.fill();
+
+    s.fillStyle = '#173e44';
+    s.beginPath();
+    s.arc(740, 101, 20, 0, TAU);
+    s.fill();
+
+    for (let j=0; j<5; j++) {
+      const p = [[0,440]];
+
+      for (let x=0; x<=1050; x+=24) {
+        p.push([
+          x,
+          260+j*22 +
+          Math.sin(x*.012+j*2)*39 +
+          Math.sin(x*.035+j)*12 +
+          rand()*11
+        ]);
+      }
+
+      p.push([1024,490]);
+
+      poly(
+        s, p,
+        ['#183e46','#163b41','#12393d','#0b3035','#0b2a2e'][j]
+      );
+    }
+
+    for (let i=0; i<22; i++) {
+      s.save();
+      s.scale(1,.16);
+      gradient(
+        s,
+        rand()*1024,
+        1800+rand()*650,
+        100+rand()*240,
+        'rgba(119,178,156,.08)'
+      );
+      s.restore();
+    }
+
+    // Непрерывная подложка воды заполняет область за передним планом.
+    let wg = b.createLinearGradient(0,388,0,576);
+    wg.addColorStop(0,'#285457');
+    wg.addColorStop(.3,'#13393e');
+    wg.addColorStop(1,'#031b25');
+
+    b.fillStyle = wg;
+    b.fillRect(0,388,1024,188);
+
+    water.g.fillStyle = '#fff';
+    water.g.fillRect(0,390,1024,186);
+
+    let dg = d.createLinearGradient(0,388,0,576);
+    dg.addColorStop(0,'#515151');
+    dg.addColorStop(1,'#b5b5b5');
+
+    d.fillStyle = dg;
+    d.fillRect(0,388,1024,188);
+
+    // Архитектура и маски используют одни и те же координаты.
+    function rect(x,y,w,h,c,z=.49) {
+      b.fillStyle = c;
+      b.fillRect(x,y,w,h);
+      d.fillStyle = `rgb(${z*255},${z*255},${z*255})`;
+      d.fillRect(x,y,w,h);
+    }
+
+    function gl(x,y,w,h) {
+      gold.g.fillStyle = '#fff';
+      gold.g.fillRect(x,y,w,h);
+    }
+
+    function roof(cx,y,w,h) {
+      const path = g => {
+        g.beginPath();
+        g.moveTo(cx-w/2,y+5);
+        g.bezierCurveTo(
+          cx-w*.32,y+28,
+          cx-w*.15,y-h+14,
+          cx,y-h
+        );
+        g.bezierCurveTo(
+          cx+w*.15,y-h+14,
+          cx+w*.32,y+28,
+          cx+w/2,y+5
+        );
+        g.lineTo(cx+w*.45,y+22);
+        g.quadraticCurveTo(cx,y+2,cx-w*.45,y+22);
+        g.closePath();
+      };
+
+      const grad = b.createLinearGradient(0,y-h,0,y+22);
+      grad.addColorStop(0,'#42706a');
+      grad.addColorStop(.45,'#173e40');
+      grad.addColorStop(1,'#061c24');
+
+      path(b);
+      b.fillStyle = grad;
+      b.fill();
+
+      path(d);
+      d.fillStyle = '#a7a7a7';
+      d.fill();
+
+      b.save();
+      path(b);
+      b.clip();
+
+      for (let i=-19; i<=19; i++) {
+        b.strokeStyle = '#71908055';
+        b.lineWidth = 1;
+        b.beginPath();
+        b.moveTo(cx+i*1.8,y-h);
+        b.quadraticCurveTo(
+          cx+i*w*.012,y-5,
+          cx+i*w*.026,y+20
+        );
+        b.stroke();
+      }
+
+      for (let k=0; k<6; k++) {
+        b.strokeStyle = '#0a2028aa';
+        b.beginPath();
+        b.ellipse(cx,y-h+k*12,w*.47,k*5+3,0,0,Math.PI);
+        b.stroke();
+      }
+
+      b.restore();
+
+      for (const g of [b,gold.g]) {
+        g.beginPath();
+        g.moveTo(cx-w/2,y+5);
+        g.quadraticCurveTo(cx-w*.37,y+34,cx,y+8);
+        g.quadraticCurveTo(cx+w*.37,y+34,cx+w/2,y+5);
+        g.strokeStyle = g===b ? '#c6a55d' : '#fff';
+        g.lineWidth = g===b ? 3 : 5;
+        g.stroke();
+      }
+
+      for (const sign of [-1,1]) {
+        const x = cx+sign*w/2;
+
+        for (const g of [b,gold.g]) {
+          g.strokeStyle = g===b ? '#ebc777' : '#fff';
+          g.lineWidth = 2;
+          g.beginPath();
+          g.moveTo(x-sign*12,y+12);
+          g.quadraticCurveTo(x+sign*15,y,x+sign*6,y-16);
+          g.quadraticCurveTo(x-sign*3,y-20,x-sign*3,y-9);
+          g.stroke();
+        }
+
+        gradient(b,x,y+3,17,'rgba(241,179,77,.13)');
+      }
+    }
+
+    function windowPane(x,y,w,h) {
+      const q = b.createLinearGradient(x,y,x+w,y+h);
+      q.addColorStop(0,'#e6a04c');
+      q.addColorStop(.5,'#f0c078');
+      q.addColorStop(1,'#85422d');
+
+      rect(x,y,w,h,q,.53);
+
+      b.strokeStyle = '#452f27';
+      b.lineWidth = 2;
+      b.strokeRect(x,y,w,h);
+
+      for (let xx=x+5; xx<x+w; xx+=7) {
+        line(b,xx,y,xx,y+h,'#5b392e',1.1);
+      }
+
+      for (let yy=y+9; yy<y+h; yy+=12) {
+        line(b,x,yy,x+w,yy,'#67442d',1);
+      }
+
+      gradient(
+        b,x+w/2,y+h/2,w*1.15,
+        'rgba(241,143,63,.10)'
+      );
+    }
+
+    function lantern(x,y,r=10) {
+      line(b,x,y-18,x,y,'#ac925b',1);
+      gradient(b,x,y+r,40,'rgba(255,111,39,.25)');
+
+      b.save();
+      b.shadowBlur = 18;
+      b.shadowColor = '#f64c2e';
+
+      const q = b.createRadialGradient(x-2,y+r,1,x,y+r,r*1.3);
+      q.addColorStop(0,'#ffe7a3');
+      q.addColorStop(.3,'#ff9c55');
+      q.addColorStop(1,'#a72123');
+
+      b.fillStyle = q;
+      b.beginPath();
+      b.ellipse(x,y+r,r,r*1.25,0,0,TAU);
+      b.fill();
+      b.restore();
+
+      for (let i=-2; i<=2; i++) {
+        line(
+          b,
+          x+i*r*.3,y,
+          x+i*r*.3,y+2*r,
+          '#a52e2c66',.6
+        );
+      }
+
+      b.fillStyle = '#d6ac62';
+      b.fillRect(x-r*.55,y-2,r*1.1,3);
+      b.fillRect(x-r*.55,y+r*2,r*1.1,3);
+
+      line(b,x,y+r*2,x,y+r*2+9,'#c68745',1);
+
+      lamps.g.fillStyle = '#fff';
+      lamps.g.beginPath();
+      lamps.g.ellipse(x,y+r,r*1.35,r*1.6,0,0,TAU);
+      lamps.g.fill();
+    }
+
+    // Основание и боковые купальни.
+    rect(214,376,596,20,'#1e3437',.57);
+    rect(229,394,566,7,'#819386',.58);
+
+    for (const cx of [295,729]) {
+      rect(cx-76,318,152,64,'#422d29');
+
+      for (let x=cx-63; x<cx+62; x+=31) {
+        windowPane(x,333,23,36);
+      }
+
+      roof(cx,316,200,48);
+
+      for (let x=cx-69; x<=cx+69; x+=69) {
+        rect(x,327,5,57,'#7f4931',.6);
+      }
+
+      lantern(cx-68,341,7);
+      lantern(cx+68,341,7);
+    }
+
+    rect(355,227,314,150,'#51352d');
+    rect(369,218,286,68,'#6b3f2c');
+
+    for (let x=380; x<648; x+=39) {
+      windowPane(x,240,27,38);
+    }
+
+    rect(331,294,362,89,'#372c29');
+
+    for (let x=345; x<678; x+=38) {
+      windowPane(x,316,26,55);
+    }
+
+    // Освещённый коридор, полностью нарисованный за входной аркой.
+    let ag = b.createLinearGradient(0,313,0,387);
+    ag.addColorStop(0,'#f5c981');
+    ag.addColorStop(1,'#422d28');
+
+    b.fillStyle = ag;
+    b.beginPath();
+    b.moveTo(474,386);
+    b.lineTo(474,335);
+    b.arc(512,335,38,Math.PI,0);
+    b.lineTo(550,386);
+    b.fill();
+
+    d.fillStyle = '#777';
+    d.fillRect(474,322,76,64);
+
+    for (let j=0; j<4; j++) {
+      b.strokeStyle = `rgba(75,41,28,${.65-j*.1})`;
+      b.lineWidth = 3;
+      b.beginPath();
+      b.moveTo(479+j*7,383);
+      b.lineTo(479+j*7,337);
+      b.arc(512,337,33-j*7,Math.PI,0);
+      b.lineTo(545-j*7,383);
+      b.stroke();
+    }
+
+    for (let x=339; x<=690; x+=44) {
+      rect(x,306,6,80,'#ad613a',.63);
+      gl(x,308,2,65);
+      line(b,x+1,310,x+1,376,'#ddaa60',1);
+    }
+
+    roof(512,296,430,71);
+    roof(512,228,350,75);
+
+    rect(449,159,126,45,'#48322c');
+
+    for (let x=459; x<568; x+=27) {
+      windowPane(x,167,18,27);
+    }
+
+    roof(512,157,203,55);
+
+    // Шпиль и резные балконы.
+    for (const g of [b,gold.g]) {
+      g.strokeStyle = g===b ? '#d9b968' : '#fff';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(512,105);
+      g.lineTo(512,83);
+      g.moveTo(504,95);
+      g.quadraticCurveTo(512,70,520,95);
+      g.stroke();
+    }
+
+    for (const yy of [285,377]) {
+      rect(337,yy,350,4,'#b58547',.64);
+      gl(337,yy,350,2);
+
+      for (let x=342; x<685; x+=12) {
+        rect(x,yy-12,3,15,'#7d583c',.63);
+        poly(
+          b,
+          [[x,yy-10],[x+6,yy-3],[x+12,yy-10]],
+          null,'#bd8b48',.7
+        );
+      }
+    }
+
+    for (let x=356; x<685; x+=46) {
+      lantern(x,303,8);
+    }
+
+    lantern(465,243,8);
+    lantern(559,243,8);
+
+    // Вывеска «湯屋».
+    rect(484,229,56,60,'#172b29',.68);
+
+    b.strokeStyle = '#d1ae5c';
+    b.lineWidth = 3;
+    b.strokeRect(484,229,56,60);
+
+    gold.g.strokeStyle = '#fff';
+    gold.g.lineWidth = 4;
+    gold.g.strokeRect(484,229,56,60);
+
+    b.save();
+    b.shadowColor = '#f4be63';
+    b.shadowBlur = 9;
+    b.fillStyle = '#efce82';
+    b.textAlign = 'center';
+    b.font = 'bold 24px "Noto Serif CJK JP","Yu Mincho",serif';
+    b.fillText('湯',512,254);
+    b.fillText('屋',512,280);
+    b.restore();
+
+    gold.g.fillStyle = '#fff';
+    gold.g.textAlign = 'center';
+    gold.g.font = 'bold 24px "Noto Serif CJK JP","Yu Mincho",serif';
+    gold.g.fillText('湯',512,254);
+    gold.g.fillText('屋',512,280);
+
+    for (let j=0; j<5; j++) {
+      rect(
+        450-j*11,385+j*3,124+j*22,3,
+        j%2 ? '#7b8674' : '#354b48',
+        .55+j*.015
+      );
+    }
+
+    // Отражение готовой архитектуры с полосовым преломлением.
+    const reflection = canvas();
+    reflection.getContext('2d').drawImage(building.c,0,0);
+
+    b.save();
+    b.beginPath();
+    b.rect(0,401,1024,175);
+    b.clip();
+
+    for (let y=401; y<576; y+=2) {
+      const sy = 399-(y-401)*1.45;
+      b.globalAlpha = .42*(1-(y-401)/220);
+
+      b.drawImage(
+        reflection,
+        0,sy*1024/576,1024,3*1024/576,
+        Math.sin(y*.39)*3,y,1024,2.5
+      );
+    }
+
+    b.restore();
+
+    for (let i=0; i<1900; i++) {
+      const y = 397+rand()*179;
+      const x = rand()*1024;
+
+      line(
+        b,x,y,x+2+rand()*24*(y/576),y,
+        rand()<.25 ? '#d6b16c25' : '#78b7ae16',
+        .3+rand()*.5
+      );
+    }
+
+    for (let i=0; i<65; i++) {
+      const y = 407+rand()*142;
+      const x = 470+(rand()-.5)*(y-370)*1.3;
+      line(b,x,y,x+rand()*17+2,y,'#d9b66c44',.8);
+    }
+
+    // Передние врата с прозрачным арочным проёмом.
+    function gatePath(g) {
+      g.beginPath();
+      g.moveTo(68,576);
+      g.lineTo(75,137);
+      g.bezierCurveTo(81,33,945,33,951,137);
+      g.lineTo(960,576);
+      g.lineTo(880,576);
+      g.lineTo(875,161);
+      g.bezierCurveTo(869,78,155,78,149,161);
+      g.lineTo(144,576);
+      g.closePath();
+    }
+
+    let fg = f.createLinearGradient(60,0,970,0);
+    fg.addColorStop(0,'#102b2e');
+    fg.addColorStop(.12,'#263d36');
+    fg.addColorStop(.3,'#071b20');
+    fg.addColorStop(.8,'#102626');
+    fg.addColorStop(.9,'#2f443b');
+    fg.addColorStop(1,'#06191d');
+
+    gatePath(f);
+    f.fillStyle = fg;
+    f.fill();
+
+    gatePath(d);
+    d.fillStyle = '#fff';
+    d.fill();
+
+    f.save();
+    gatePath(f);
+    f.clip();
+
+    for (let i=0; i<1800; i++) {
+      const x = rand()*1024;
+      const y = rand()*576;
+      line(f,x,y,x+rand()*24,y+rand()*3,'#b6b6900d',.6);
+    }
+
+    for (let y=170; y<576; y+=45) {
+      line(f,70,y,150,y+3,'#020e13',3);
+      line(f,875,y,956,y+3,'#020e13',3);
+    }
+
+    f.restore();
+
+    f.beginPath();
+    f.moveTo(143,576);
+    f.lineTo(150,163);
+    f.bezierCurveTo(153,72,871,72,875,163);
+    f.lineTo(881,576);
+    f.strokeStyle = '#b19c625c';
+    f.lineWidth = 2;
+    f.stroke();
+
+    for (const x of [112,913]) {
+      f.strokeStyle = '#b1a16b60';
+      f.lineWidth = 1;
+
+      for (let y=160; y<480; y+=40) {
+        poly(
+          f,
+          [[x,y],[x+9,y+13],[x,y+26],[x-9,y+13]],
+          null,'#b1a16b55',1
+        );
+
+        f.beginPath();
+        f.arc(x,y+13,3,0,TAU);
+        f.stroke();
+      }
+
+      f.fillStyle = '#273f38';
+      f.fillRect(x-49,493,98,17);
+      f.fillStyle = '#112b2c';
+      f.fillRect(x-55,510,110,66);
+    }
+
+    // Рекурсивные ветви: одинаковые силуэты в цвете и A-маске.
+    function branch(x,y,len,angle,n) {
+      const ex = x+Math.cos(angle)*len;
+      const ey = y+Math.sin(angle)*len;
+
+      for (const g of [f,leaves.g]) {
+        line(g,x,y,ex,ey,g===f?'#071d20':'#fff',n*1.8+.5);
+      }
+
+      if (n>0) {
+        branch(ex,ey,len*.69,angle-.44-rand()*.25,n-1);
+        branch(ex,ey,len*.72,angle+.38+rand()*.28,n-1);
+      }
+
+      if (n<3) {
+        for (let i=0; i<8; i++) {
+          const lx = ex+(rand()-.5)*30;
+          const ly = ey+(rand()-.5)*15;
+          const lr = 3+rand()*3;
+
+          for (const g of [f,leaves.g]) {
+            g.fillStyle = g===f
+              ? ['#153c36','#1d4940','#0a2a29','#315448'][i%4]
+              : '#fff';
+
+            g.beginPath();
+            g.ellipse(lx,ly,lr,1.8,angle,0,TAU);
+            g.fill();
+          }
+        }
+      }
+    }
+
+    branch(-10,8,152,.25,5);
+    branch(1034,0,145,2.88,5);
+    branch(40,-10,85,1.1,4);
+    branch(990,-10,90,2.05,4);
+
+    const fp = fore.c.getContext('2d').getImageData(0,0,1024,1024);
+    const dp = depth.c.getContext('2d').getImageData(0,0,1024,1024);
+
+    for (let i=0; i<fp.data.length; i+=4) {
+      if (fp.data[i+3]>200) {
+        dp.data[i] = dp.data[i+1] = dp.data[i+2] = 255;
+      }
+    }
+
+    depth.c.getContext('2d').putImageData(dp,0,0);
+
+    // RGBA: вода, золото, фонари, листва.
+    const mask = canvas();
+    const mc = mask.getContext('2d');
+    const mi = mc.createImageData(1024,1024);
+
+    const channels = [water,gold,lamps,leaves].map(
+      v => v.c.getContext('2d').getImageData(0,0,1024,1024).data
+    );
+
+    for (let i=0; i<mi.data.length; i+=4) {
+      for (let k=0; k<4; k++) {
+        mi.data[i+k] = channels[k][i+3];
+      }
+    }
+
+    mc.putImageData(mi,0,0);
+
+    // Атлас 8×8: 48 вариантов звеньев и 16 талисманов.
+    const a = atlas.c.getContext('2d');
+    a.setTransform(1,0,0,1,0,0);
+    a.clearRect(0,0,1024,1024);
+
+    for (let cell=0; cell<64; cell++) {
+      const x = (cell%8)*128;
+      const y = Math.floor(cell/8)*128;
+
+      a.save();
+      a.translate(x+64,y+64);
+
+      const g = a.createLinearGradient(-25,-40,25,40);
+      g.addColorStop(0,'#fff0b2');
+      g.addColorStop(.3,'#a37a38');
+      g.addColorStop(.55,'#f7dc8c');
+      g.addColorStop(1,'#594222');
+
+      a.strokeStyle = g;
+      a.fillStyle = g;
+      a.lineWidth = 8;
+
+      if (cell<48) {
+        a.beginPath();
+        a.ellipse(0,0,cell%2?12:24,45,0,0,TAU);
+        a.stroke();
+
+        a.strokeStyle = '#f7e3a180';
+        a.lineWidth = 2;
+        a.beginPath();
+        a.ellipse(-2,0,cell%2?9:20,41,0,Math.PI,TAU);
+        a.stroke();
+      } else {
+        poly(
+          a,
+          [[0,-46],[27,-20],[20,32],[0,47],[-20,32],[-27,-20]],
+          g,'#ead199',2
+        );
+
+        a.strokeStyle = '#5c482c';
+        a.lineWidth = 3;
+        a.strokeRect(-9,-13,18,25);
+        line(a,-12,0,12,0,'#55442b',3);
+
+        a.beginPath();
+        a.arc(0,-37,5,0,TAU);
+        a.stroke();
+      }
+
+      a.restore();
+    }
+
+    const tex = (c,data=false) => {
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.NoColorSpace;
+      t.premultiplyAlpha = false;
+      t.minFilter = THREE.LinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.generateMipmaps = false;
+      return t;
+    };
+
+    const result = {
+      layerSkyTex: tex(sky.c),
+      layerBuildingTex: tex(building.c),
+      layerForegroundTex: tex(fore.c),
+      depthMapTex: tex(depth.c,true),
+      maskTex: tex(mi,true),
+      charmAtlasTex: tex(atlas.c)
+    };
+
+    // ImageData — допустимый источник texImage2D.
+    // Исходные байты сохраняют RGB даже при A=0:
+    // повторное чтение Canvas могло бы потерять их из-за premultiplication.
+    return result;
+  }
+
+  const textures = generateTextures();
+
+  // THREE.JS
+  const renderer = new THREE.WebGLRenderer({
+    antialias:true,
+    alpha:false,
+    powerPreference:'high-performance'
+  });
+
+  renderer.setPixelRatio(Math.min(devicePixelRatio,1.7));
+  renderer.setClearColor(0x06191e);
+  $('#stage').appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(
+    44,innerWidth/innerHeight,.1,100
+  );
+
+  camera.position.set(0,0,12.6);
+
+  const vertexShader = `
+    precision highp float;
+
+    uniform sampler2D uDepth;
+    uniform sampler2D uMask;
+    uniform float uTime;
+    uniform float uLayer;
+    uniform float uRelief;
+    uniform float uEffects;
+    uniform float uCompare;
+    uniform float uSplit;
+
+    varying vec2 vUv;
+    varying float vDepth;
+
+    void main() {
+      vUv = uv;
+
+      float d = texture2D(uDepth,uv).r;
+      d = uLayer < .5
+        ? 0.0
+        : (uLayer < 1.5 ? min(d,.72) : d);
+
+      vDepth = d;
+      vec3 p = position;
+
+      // Лучи исходной камеры сохраняют проекцию при создании барельефа.
+      vec3 ray = normalize(p-vec3(0.,0.,13.));
+      p -= ray*d*uRelief;
+
+      vec4 clip = projectionMatrix*modelViewMatrix*vec4(p,1.);
+      float side = uCompare > .5
+        ? step(uSplit,clip.x/clip.w*.5+.5)
+        : 1.;
+
+      float leaf = texture2D(uMask,uv).a
+        * step(1.5,uLayer)
+        * uEffects
+        * side;
+
+      p.x += leaf*(
+        sin(uTime*1.15+p.y*2.8)
+        + .4*sin(uTime*2.1+p.x*4.)
+      )*.035;
+
+      p.y += leaf*sin(uTime*1.3+p.x*2.)*.018;
+
+      gl_Position = projectionMatrix*modelViewMatrix*vec4(p,1.);
+    }
+  `;
+
+  const fragmentShader = `
+    precision highp float;
+
+    uniform sampler2D uMap;
+    uniform sampler2D uDepth;
+    uniform sampler2D uMask;
+
+    uniform float uTime;
+    uniform float uLayer;
+    uniform float uEffects;
+    uniform float uView;
+    uniform float uCompare;
+    uniform float uSplit;
+    uniform float uXray;
+    uniform float uXrayFront;
+    uniform vec2 uResolution;
+
+    varying vec2 vUv;
+    varying float vDepth;
+
+    float hash(vec2 p) {
+      return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);
+    }
+
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f*f*(3.-2.*f);
+
+      return mix(
+        mix(hash(i),hash(i+vec2(1,0)),f.x),
+        mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),
+        f.y
+      );
+    }
+
+    void main() {
+      vec2 uv = vUv;
+      vec4 mask = texture2D(uMask,uv);
+
+      float mid = step(.5,uLayer)*(1.-step(1.5,uLayer));
+      float fx = uEffects;
+
+      if (uCompare>.5) {
+        fx *= step(uSplit,gl_FragCoord.x/uResolution.x);
+      }
+
+      // R: вода.
+      float water = mask.r*mid;
+
+      float wave =
+        sin(uv.y*190.-uTime*1.7+sin(uv.x*32.+uTime))*.0019
+        + (noise(uv*95.+uTime*.4)-.5)*.003;
+
+      uv.x += water*wave*fx;
+      uv.y += water*sin(uv.x*115.+uTime*1.4)*.0012*fx;
+
+      vec4 col = texture2D(uMap,uv);
+      if (col.a<.015) discard;
+
+      vec3 c = col.rgb;
+
+      // G: диагональный блик по золоту.
+      float sheen = pow(
+        max(0.,cos((vUv.x+vUv.y*.6)*9.-uTime*.65)),
+        38.
+      );
+
+      c += mask.g*mid*sheen*vec3(.65,.47,.18)*fx;
+
+      // B: мерцание фонарей.
+      float flame =
+        .82
+        + .19*sin(uTime*7.+uv.x*91.)
+        + .15*noise(vec2(uTime*9.,uv.x*120.));
+
+      c += c*mask.b*mid*(flame-.65)*fx;
+
+      c += water*pow(
+        max(
+          0.,
+          sin(uv.y*240.+uTime*1.5+noise(uv*35.)*6.)
+        ),
+        25.
+      )*vec3(.05,.10,.09)*fx;
+
+      float d = texture2D(uDepth,vUv).r;
+
+      if (uView>.5 && uView<1.5) {
+        c = vec3(d);
+      }
+
+      if (uView>1.5 && uView<2.5) {
+        c = mix(vec3(.015,.035,.04),mask.rgb,.95);
+      }
+
+      if (uView>2.5) {
+        c = mix(
+          vec3(.015,.035,.04),
+          vec3(.5,.95,.65),
+          mask.a
+        );
+      }
+
+      // Фронт: depth > front остаётся обычной сценой.
+      if (uXray>.5) {
+        float depth = vDepth;
+        float ghost = step(depth,uXrayFront);
+
+        vec2 grid = abs(fract(vUv*vec2(100.,60.))-.5);
+        float mesh = 1.-smoothstep(
+          .018,.055,min(grid.x,grid.y)
+        );
+
+        vec3 spectral =
+          vec3(.025,.15,.18)
+          + depth*vec3(.06,.26,.29)
+          + mesh*vec3(.07,.4,.43);
+
+        c = mix(c,spectral,ghost*.92);
+
+        float edge =
+          (1.-smoothstep(0.,.04,abs(depth-uXrayFront)))
+          * step(.001,uXrayFront)
+          * step(uXrayFront,.999);
+
+        c += edge*vec3(.3,1.,.86)*1.8;
+      }
+
+      float grain = (
+        hash(gl_FragCoord.xy+mod(uTime,11.))-.5
+      )*.014;
+
+      c += grain;
+      gl_FragColor = vec4(c,col.a);
+    }
+  `;
+
+  const shared = {
+    uDepth:{value:textures.depthMapTex},
+    uMask:{value:textures.maskTex},
+    uTime:{value:0},
+    uRelief:{value:.55},
+    uEffects:{value:1},
+    uView:{value:0},
+    uCompare:{value:0},
+    uSplit:{value:.5},
+    uXray:{value:0},
+    uXrayFront:{value:1},
+    uResolution:{value:new THREE.Vector2()}
+  };
+
+  const layers = [
+    'layerSkyTex',
+    'layerBuildingTex',
+    'layerForegroundTex'
+  ].map((key,i) => {
+    const material = new THREE.ShaderMaterial({
+      vertexShader,
+      fragmentShader,
+      uniforms:{
+        ...shared,
+        uMap:{value:textures[key]},
+        uLayer:{value:i}
+      },
+      transparent:i>0,
+      side:THREE.DoubleSide,
+      depthWrite:false
+    });
+
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(16,9,256,256),
+      material
+    );
+
+    mesh.position.z = [-.65,0,.9][i];
+    mesh.renderOrder = i;
+    scene.add(mesh);
+    return mesh;
+  });
+
+  const layerLabels = [
+    '01 / НЕБО И ДАЛЬНИЙ ПЛАН',
+    '02 / ПАВИЛЬОН И ВОДА',
+    '03 / ВРАТА И ЛИСТВА'
+  ].map(text => {
+    const el = document.createElement('div');
+    el.className = 'label';
+    el.textContent = text;
+    document.body.appendChild(el);
+    return el;
+  });
+
+  // Более редкая диагностическая сетка поверх настоящего меша 256×256.
+  const wire = new THREE.Mesh(
+    new THREE.PlaneGeometry(16,9,80,45),
+    new THREE.ShaderMaterial({
+      vertexShader,
+      fragmentShader:`
+        void main() {
+          gl_FragColor=vec4(.33,.9,.75,.28);
+        }
+      `,
+      uniforms:{
+        ...shared,
+        uLayer:{value:1}
+      },
+      transparent:true,
+      wireframe:true,
+      depthWrite:false
+    })
+  );
+
+  wire.position.z = .07;
+  wire.renderOrder = 4;
+  wire.visible = false;
+  scene.add(wire);
+
+  // ЦЕПИ: 18 × 14 звеньев, по 15 частиц с закреплённой верхней.
+  const chainCount = 18;
+  const links = 14;
+  const chainZ = 1.7;
+  const rest = .185;
+  const chains = [];
+
+  for (let i=0; i<chainCount; i++) {
+    const x = -5.25+i*10.5/(chainCount-1);
+    const y = 3.07-.65*Math.pow(x/5.25,2);
+    const nodes = [];
+
+    for (let j=0; j<=links; j++) {
+      nodes.push({
+        x,
+        y:y-j*rest,
+        px:x,
+        py:y-j*rest
+      });
+    }
+
+    chains.push({
+      nodes,
+      anchor:{x,y},
+      lastHit:-10
+    });
+  }
+
+  const chainGeometry = new THREE.PlaneGeometry(1,1);
+  const tiles = new Float32Array(chainCount*links);
+
+  for (let i=0; i<chainCount; i++) {
+    for (let j=0; j<links; j++) {
+      tiles[i*links+j] = j===links-1
+        ? 48+i%16
+        : (j+i)%48;
+    }
+  }
+
+  chainGeometry.setAttribute(
+    'aTile',
+    new THREE.InstancedBufferAttribute(tiles,1)
+  );
+
+  const chainMaterial = new THREE.ShaderMaterial({
+    uniforms:{
+      uAtlas:{value:textures.charmAtlasTex},
+      uOpacity:{value:1}
+    },
+    vertexShader:`
+      attribute float aTile;
+      varying vec2 vUv;
+
+      void main() {
+        vec2 cell = vec2(
+          mod(aTile,8.),
+          7.-floor(aTile/8.)
+        );
+
+        vUv = (cell+uv)/8.;
+
+        gl_Position =
+          projectionMatrix
+          * modelViewMatrix
+          * instanceMatrix
+          * vec4(position,1.);
+      }
+    `,
+    fragmentShader:`
+      uniform sampler2D uAtlas;
+      uniform float uOpacity;
+      varying vec2 vUv;
+
+      void main() {
+        vec4 c = texture2D(uAtlas,vUv);
+        if (c.a<.05) discard;
+        gl_FragColor = vec4(c.rgb,c.a*uOpacity);
+      }
+    `,
+    transparent:true,
+    side:THREE.DoubleSide,
+    depthWrite:false
+  });
+
+  const chainMesh = new THREE.InstancedMesh(
+    chainGeometry,
+    chainMaterial,
+    chainCount*links
+  );
+
+  chainMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  chainMesh.frustumCulled = false;
+  chainMesh.renderOrder = 5;
+  scene.add(chainMesh);
+
+  const dummy = new THREE.Object3D();
+
+  // WEB AUDIO: FM-колокольчики без внешних аудиофайлов.
+  let audio = null;
+  let master = null;
+  let soundOn = false;
+
+  const voices = new Set();
+  const notes = [0,2,4,7,9];
+
+  async function toggleSound() {
+    try {
+      if (!audio) {
+        audio = new (
+          window.AudioContext || window.webkitAudioContext
+        )();
+
+        master = audio.createGain();
+        master.gain.value = .55;
+
+        const compressor = audio.createDynamicsCompressor();
+        compressor.threshold.value = -19;
+        compressor.ratio.value = 6;
+
+        master.connect(compressor);
+        compressor.connect(audio.destination);
+      }
+
+      await audio.resume();
+      soundOn = !soundOn;
+
+      $('#sound').textContent = soundOn
+        ? '♫ ЗВУК ВКЛЮЧЁН'
+        : '♫ ВКЛЮЧИТЬ ЗВУК';
+
+      $('#sound').setAttribute('aria-pressed',soundOn);
+
+      if (soundOn) bell(5,2);
+    } catch (e) {
+      $('#status').textContent = 'Звук недоступен в этом браузере';
+    }
+  }
+
+  function bell(index,speed) {
+    if (
+      !soundOn ||
+      !audio ||
+      audio.state!=='running' ||
+      voices.size>22
+    ) return;
+
+    const t = audio.currentTime;
+
+    const f = 220*Math.pow(
+      2,
+      (notes[index%5]+12*Math.floor(index/5))/12
+    )*(1+Math.min(speed,15)*.003);
+
+    const volume = Math.min(.16,.018+speed*.012);
+
+    const carrier = audio.createOscillator();
+    const mod = audio.createOscillator();
+    const mg = audio.createGain();
+    const env = audio.createGain();
+    const pan = audio.createStereoPanner();
+
+    carrier.frequency.value = f;
+    mod.frequency.value = f*2.76;
+
+    mg.gain.setValueAtTime(f*1.3,t);
+    mg.gain.exponentialRampToValueAtTime(.1,t+1.2);
+
+    mod.connect(mg);
+    mg.connect(carrier.frequency);
+
+    env.gain.setValueAtTime(.0001,t);
+    env.gain.exponentialRampToValueAtTime(volume,t+.007);
+    env.gain.exponentialRampToValueAtTime(.0001,t+1.8);
+
+    pan.pan.value = (index/17-.5)*1.4;
+
+    carrier.connect(env);
+    env.connect(pan);
+    pan.connect(master);
+
+    carrier.start(t);
+    mod.start(t);
+    carrier.stop(t+1.85);
+    mod.stop(t+1.85);
+
+    voices.add(carrier);
+
+    carrier.onended = () => {
+      [carrier,mod,mg,env,pan].forEach(n => n.disconnect());
+      voices.delete(carrier);
+    };
+  }
+
+  $('#sound').onclick = toggleSound;
+
+  // RAYCASTER И ВВОД
+  const pointer = new THREE.Vector2();
+  const raycaster = new THREE.Raycaster();
+  const hit = new THREE.Vector3();
+
+  const plane = new THREE.Plane(
+    new THREE.Vector3(0,0,1),
+    -chainZ
+  );
+
+  let pointerActive = false;
+  let lastMove = 0;
+  let pointerWorld = null;
+  let prevWorld = null;
+
+  function move(e) {
+    pointer.set(
+      e.clientX/innerWidth*2-1,
+      1-e.clientY/innerHeight*2
+    );
+
+    pointerActive = true;
+    lastMove = performance.now();
+  }
+
+  renderer.domElement.addEventListener('pointermove',move);
+
+  renderer.domElement.addEventListener('pointerdown',e => {
+    move(e);
+    renderer.domElement.setPointerCapture(e.pointerId);
+  });
+
+  renderer.domElement.addEventListener('pointerleave',() => {
+    pointerActive = false;
+    pointer.set(0,0);
+  });
+
+  renderer.domElement.addEventListener('pointerup',e => {
+    if (e.pointerType!=='mouse') pointerActive = false;
+  });
+
+  // ИНТЕРФЕЙС ПАЙПЛАЙНА
+  let mode = 0;
+  let depthView = false;
+  let masksView = 0;
+  let autoTween = null;
+
+  const state = {
+    explode:0,
+    flight:0
+  };
+
+  const titles = [
+    'Там, где спит вода',
+    'У каждой тайны — слои',
+    'Маленькие причины магии',
+    'По ту сторону врат',
+    'Увидеть невидимое'
+  ];
+
+  const descriptions = [
+    'Проведите сквозь золотые цепи. Разберите иллюзию на пять простых чудес.',
+    'Три самостоятельных плана. Один объёмный мир. Вращение раскрывает устройство кадра.',
+    'Вода, золото, огонь и листва. Сдвигайте границу, чтобы увидеть работу шейдеров.',
+    'Спуститесь к воде. Коснитесь талисманов — у каждого свой голос.',
+    'Фронт проходит по глубине, открывая призрачную геометрию города.'
+  ];
+
+  function slider(id,label,min,max,value,step='.01') {
+    return `
+      <label class="control" for="${id}">
+        ${label}
+        <input
+          id="${id}"
+          type="range"
+          min="${min}"
+          max="${max}"
+          step="${step}"
+          value="${value}"
+        >
+        <output id="${id}Value">${Number(value).toFixed(2)}</output>
+      </label>
+    `;
+  }
+
+  function bind(id,fn) {
+    const el = $('#'+id);
+
+    el.oninput = () => {
+      $('#'+id+'Value').value = (+el.value).toFixed(2);
+      fn(+el.value);
+    };
+  }
+
+  function setMode(n) {
+    mode = n;
+
+    if (autoTween) autoTween.kill();
+
+    gsap.killTweensOf(state);
+
+    shared.uView.value = 0;
+    shared.uCompare.value = n===2 ? 1 : 0;
+    shared.uXray.value = n===4 ? 1 : 0;
+
+    wire.visible = false;
+    depthView = false;
+    masksView = 0;
+
+    gsap.to(state,{
+      explode:n===1 ? 1 : 0,
+      flight:n===3 ? 1 : 0,
+      duration:1.5,
+      ease:'power2.inOut'
+    });
+
+    document.querySelectorAll('.tab').forEach((b,i) => {
+      b.classList.toggle('active',i===n);
+      b.setAttribute('aria-pressed',i===n);
+    });
+
+    $('#chapter').textContent = `0${n+1} / 05`;
+    $('#chapterTitle').textContent = titles[n];
+    $('#chapterText').textContent = descriptions[n];
+    $('#divider').style.display = n===2 ? 'block' : 'none';
+
+    let html = '';
+
+    if (n===0) {
+      html =
+        '<button class="small" id="depthButton">КАРТА ГЛУБИНЫ</button>' +
+        '<button class="small" id="wireButton">СЕТКА</button>' +
+        slider('relief','ОБЪЁМ',0,1.5,shared.uRelief.value) +
+        '<span class="hint">18 ЦЕПЕЙ · 252 ЗВЕНА · ЖИВОЙ ЗВУК</span>';
+    }
+
+    if (n===1) {
+      html =
+        slider('explode','РАССТОЯНИЕ',0,1.4,1) +
+        '<span class="hint">ТРИ ПЛОСКОСТИ / ПЕРСПЕКТИВНОЕ ВЫДАВЛИВАНИЕ</span>';
+    }
+
+    if (n===2) {
+      html =
+        slider('compare','ДО / ПОСЛЕ',0,1,shared.uSplit.value) +
+        '<button class="small" id="maskButton">RGB-МАСКИ</button>' +
+        '<button class="small" id="alphaButton">A · ЛИСТВА</button>' +
+        '<span class="hint">R ВОДА · G ЗОЛОТО · B ОГОНЬ · A ЛИСТВА</span>';
+    }
+
+    if (n===3) {
+      html =
+        slider('flight','ПРИБЛИЖЕНИЕ',0,1,1) +
+        '<span class="hint">ВЫСОТА 0.58 · FOV 34° · ПРОКРУТКА / ПОЛЗУНОК</span>';
+    }
+
+    if (n===4) {
+      html =
+        slider('front','ФРОНТ',0,1,shared.uXrayFront.value) +
+        '<button class="small" id="auto">↝ ПРОГНАТЬ ВОЛНУ</button>' +
+        '<span class="hint">ОТ ЗРИТЕЛЯ К ГОРИЗОНТУ / 1.00 → 0.00</span>';
+    }
+
+    $('#controls').innerHTML = html;
+
+    if (n===0) {
+      $('#depthButton').onclick = e => {
+        depthView = !depthView;
+        shared.uView.value = depthView ? 1 : 0;
+        e.target.classList.toggle('active',depthView);
+      };
+
+      $('#wireButton').onclick = e => {
+        wire.visible = !wire.visible;
+        e.target.classList.toggle('active',wire.visible);
+      };
+
+      bind('relief',v => shared.uRelief.value=v);
+    }
+
+    if (n===1) {
+      bind('explode',v => {
+        gsap.killTweensOf(state,'explode');
+        state.explode = v;
+      });
+    }
+
+    if (n===2) {
+      bind('compare',v => shared.uSplit.value=v);
+
+      $('#maskButton').onclick = e => {
+        masksView = masksView===2 ? 0 : 2;
+        shared.uView.value = masksView;
+        e.target.classList.toggle('active',masksView===2);
+        $('#alphaButton').classList.remove('active');
+      };
+
+      $('#alphaButton').onclick = e => {
+        masksView = masksView===3 ? 0 : 3;
+        shared.uView.value = masksView;
+        e.target.classList.toggle('active',masksView===3);
+        $('#maskButton').classList.remove('active');
+      };
+    }
+
+    if (n===3) {
+      bind('flight',v => {
+        gsap.killTweensOf(state,'flight');
+        state.flight = v;
+      });
+    }
+
+    if (n===4) {
+      bind('front',v => {
+        if (autoTween) autoTween.kill();
+        shared.uXrayFront.value = v;
+      });
+
+      $('#auto').onclick = () => {
+        if (autoTween) autoTween.kill();
+
+        shared.uXrayFront.value = 1;
+
+        autoTween = gsap.to(shared.uXrayFront,{
+          value:0,
+          duration:6,
+          ease:'none',
+          onUpdate:() => {
+            if (mode===4) {
+              $('#front').value = shared.uXrayFront.value;
+              $('#frontValue').value =
+                shared.uXrayFront.value.toFixed(2);
+            }
+          }
+        });
+      };
+    }
+  }
+
+  document.querySelectorAll('.tab').forEach(b => {
+    b.onclick = () => setMode(+b.dataset.mode);
+  });
+
+  $('#reset').onclick = () => {
+    shared.uRelief.value = .55;
+    shared.uSplit.value = .5;
+    shared.uXrayFront.value = 1;
+    pointer.set(0,0);
+    setMode(0);
+  };
+
+  addEventListener('wheel',e => {
+    if (e.target.closest('.dock')) return;
+
+    e.preventDefault();
+
+    if (mode!==3) setMode(3);
+
+    gsap.killTweensOf(state,'flight');
+
+    state.flight = THREE.MathUtils.clamp(
+      state.flight+e.deltaY*.00065,
+      0,1
+    );
+
+    $('#flight').value = state.flight;
+    $('#flightValue').value = state.flight.toFixed(2);
+  },{passive:false});
+
+  function resize() {
+    renderer.setSize(innerWidth,innerHeight);
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.getDrawingBufferSize(shared.uResolution.value);
+  }
+
+  addEventListener('resize',resize);
+  resize();
+
+  // ФИЗИКА ВЕРЛЕ: фиксированный шаг 120 Гц, 24 прохода ограничений.
+  let accumulator = 0;
+  let last = performance.now();
+  let time = 0;
+  let frameCount = 0;
+  let fpsTime = 0;
+
+  const step = 1/120;
+
+  function physics(dt,cursor,speed) {
+    for (let k=0; k<chainCount; k++) {
+      const c = chains[k];
+      const ns = c.nodes;
+
+      for (let j=1; j<ns.length; j++) {
+        const p = ns[j];
+        const vx = (p.x-p.px)*.995;
+        const vy = (p.y-p.py)*.995;
+
+        p.px = p.x;
+        p.py = p.y;
+
+        p.x +=
+          vx +
+          Math.sin(time*1.2+k*.5+j*.2)*.000015;
+
+        p.y += vy-5.8*dt*dt;
+      }
+
+      for (let it=0; it<24; it++) {
+        ns[0].x = c.anchor.x;
+        ns[0].y = c.anchor.y;
+
+        for (let j=1; j<ns.length; j++) {
+          const a = ns[j-1];
+          const b = ns[j];
+
+          const dx = b.x-a.x;
+          const dy = b.y-a.y;
+          const l = Math.hypot(dx,dy)||.0001;
+          const q = (l-rest)/l;
+
+          if (j===1) {
+            b.x -= dx*q;
+            b.y -= dy*q;
+          } else {
+            a.x += dx*q*.5;
+            a.y += dy*q*.5;
+            b.x -= dx*q*.5;
+            b.y -= dy*q*.5;
+          }
+        }
+
+        if (cursor && it<5) {
+          for (let j=1; j<ns.length; j++) {
+            const p = ns[j];
+            const dx = p.x-cursor.x;
+            const dy = p.y-cursor.y;
+            const dist = Math.hypot(dx,dy);
+            const radius = .24;
+
+            if (dist<radius) {
+              const nx = dist>.0001
+                ? dx/dist
+                : (k%2 ? 1 : -1);
+
+              const ny = dist>.0001 ? dy/dist : 0;
+
+              p.x += nx*(radius-dist)*.8;
+              p.y += ny*(radius-dist)*.8;
+
+              if (speed>.25 && time-c.lastHit>.15) {
+                bell(k,speed);
+                c.lastHit = time;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function renderChains() {
+    for (let i=0; i<chainCount; i++) {
+      for (let j=1; j<=links; j++) {
+        const a = chains[i].nodes[j-1];
+        const b = chains[i].nodes[j];
+        const lastLink = j===links;
+
+        dummy.position.set(
+          (a.x+b.x)*.5,
+          (a.y+b.y)*.5,
+          chainZ
+        );
+
+        dummy.rotation.set(
+          0,0,
+          Math.atan2(b.y-a.y,b.x-a.x)+Math.PI/2
+        );
+
+        dummy.scale.set(
+          lastLink ? .19 : .065,
+          lastLink ? .29 : rest*1.42,
+          1
+        );
+
+        dummy.updateMatrix();
+        chainMesh.setMatrixAt(i*links+j-1,dummy.matrix);
+      }
+    }
+
+    chainMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  const target = new THREE.Vector3();
+  const look = new THREE.Vector3();
+  let disposed = false;
+
+  function animate(now) {
+    if (disposed) return;
+
+    requestAnimationFrame(animate);
+
+    const realDt = (now-last)/1000;
+    const dt = Math.min(realDt,.045);
+    last = now;
+    time += dt;
+
+    shared.uTime.value = time;
+
+    const ex = state.explode;
+    const fl = state.flight;
+    const baseZ = innerWidth<760 ? 14.2 : 12.3;
+
+    target.set(
+      pointer.x*.26*(1-ex)+ex*11,
+      (-pointer.y*.10)*(1-ex)
+        + fl*((.5-390/576)*9+.58)
+        + ex*3.7,
+      baseZ-fl*2.6+ex*3.5
+    );
+
+    camera.position.lerp(target,1-Math.exp(-dt*4));
+
+    look.set(ex*.3,-fl*1.12,0);
+    camera.lookAt(look);
+
+    camera.fov = 44-fl*10;
+    camera.updateProjectionMatrix();
+
+    layers.forEach((m,i) => {
+      m.position.z = [-.65,0,.9][i]+(i-1)*ex*3.5;
+    });
+
+    wire.position.z = layers[1].position.z+.07;
+
+    chainMesh.visible = ex<.15 && shared.uView.value===0;
+
+    chainMaterial.uniforms.uOpacity.value =
+      (1-Math.min(1,ex*7))*(mode===4 ? .32 : 1);
+
+    pointerWorld = null;
+
+    if (pointerActive && chainMesh.visible) {
+      camera.updateMatrixWorld();
+      raycaster.setFromCamera(pointer,camera);
+
+      if (raycaster.ray.intersectPlane(plane,hit)) {
+        pointerWorld = {x:hit.x,y:hit.y};
+      }
+    }
+
+    let speed = 0;
+
+    if (pointerWorld && prevWorld) {
+      speed = Math.min(
+        30,
+        Math.hypot(
+          pointerWorld.x-prevWorld.x,
+          pointerWorld.y-prevWorld.y
+        )/Math.max(dt,.001)
+      );
+    }
+
+    accumulator += dt;
+
+    const start = prevWorld||pointerWorld;
+    const totalSteps = Math.floor(accumulator/step);
+
+    // Интерполяция движения курсора между подшагами уменьшает tunneling.
+    for (let n=0; n<totalSteps; n++) {
+      const t = (n+1)/Math.max(1,totalSteps);
+
+      const cursor = pointerWorld && start
+        ? {
+            x:start.x+(pointerWorld.x-start.x)*t,
+            y:start.y+(pointerWorld.y-start.y)*t
+          }
+        : null;
+
+      physics(step,cursor,speed);
+      accumulator -= step;
+    }
+
+    prevWorld = pointerWorld;
+    renderChains();
+
+    layerLabels.forEach((el,i) => {
+      el.style.display = ex>.35 ? 'block' : 'none';
+
+      if (ex>.35) {
+        // Центр верхней кромки слоя; подписи разнесены лесенкой,
+        // иначе в проекции они ложатся на одну высоту и перекрываются.
+        const p = new THREE.Vector3(
+          0,3.65,layers[i].position.z
+        ).project(camera);
+
+        const w = el.offsetWidth;
+        const x = (p.x*.5+.5)*innerWidth-w/2;
+
+        el.style.left = THREE.MathUtils.clamp(x,12,innerWidth-w-12)+'px';
+        el.style.top = (-p.y*.5+.5)*innerHeight-(2-i)*38+'px';
+      }
+    });
+
+    $('#divider').style.left = shared.uSplit.value*100+'%';
+
+    renderer.render(scene,camera);
+
+    // Для счётчика нужно реальное время кадра, а не урезанный шаг симуляции.
+    frameCount++;
+    fpsTime += realDt;
+
+    if (fpsTime>1) {
+      $('#stats').textContent =
+        `${Math.round(frameCount/fpsTime)} FPS / 2.5D REALTIME`;
+
+      frameCount = 0;
+      fpsTime = 0;
+    }
+  }
+
+  renderer.domElement.addEventListener('webglcontextlost',e => {
+    e.preventDefault();
+    disposed = true;
+    fail(
+      'WebGL-контекст потерян. Перезагрузите страницу, чтобы восстановить сцену.'
+    );
+  });
+
+  document.addEventListener('visibilitychange',() => {
+    if (document.hidden) {
+      if (audio) audio.suspend();
+    } else {
+      last = performance.now();
+      accumulator = 0;
+      prevWorld = null;
+
+      if (audio && soundOn) {
+        audio.resume().catch(() => {});
+      }
+    }
+  });
+
+  setMode(0);
+  $('#loading').style.display = 'none';
+  requestAnimationFrame(animate);
+
+} catch (error) {
+  console.error(error);
+  fail(
+    'Не удалось запустить сцену: '+error.message+
+    ' · Нужен браузер с поддержкой WebGL.'
+  );
+}
+}
+</script>
+</body>
+</html>
