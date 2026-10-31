@@ -69,6 +69,7 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:4px}
 .pill:hover{border-color:var(--ember);color:var(--ember)}
 .pill.gold{border-color:var(--ember);color:var(--ember)}
 
+#world{position:fixed;inset:0;width:100%;height:100%;display:none;touch-action:none;outline:none}
 #stick{position:fixed;left:max(24px,env(safe-area-inset-left,0px));bottom:calc(96px + env(safe-area-inset-bottom,0px));
   width:124px;height:124px;border-radius:50%;border:1px solid var(--line);background:#060b1066;backdrop-filter:blur(6px);touch-action:none;z-index:3}
 #stick i{position:absolute;left:50%;top:50%;width:50px;height:50px;margin:-25px;border-radius:50%;background:#e7b56a40;border:1px solid var(--ember)}
@@ -510,120 +511,165 @@ function boot(imgGate, imgCity) {
     };
   })();
 
-  /* ============================== ИГРА: ГРАД НА ВОДЕ ============================== */
+  /* ============================== ИГРА НА BABYLON.JS: ГРАД НА ВОДЕ ============================== */
 
-  // Китеж как настоящий 3D-мир: сетка каналов, острова-помосты на сваях с избами и башнями,
-  // крытый мост, терем в конце главного канала, лес по берегам озера. Игрок гребёт на лодке.
-  const world = (() => {
-    const scene = new THREE.Scene();
-    const FOG_COLOR = new THREE.Color(0x1c2834);
-    scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0115);
-    const cam = new THREE.PerspectiveCamera(55, 1, 0.1, 1600);
-    const MOON_DIR = new THREE.Vector3(0.32, 0.38, -0.87).normalize();
+  // Babylon подгружается заранее, пока зритель у дверей: он тяжёлый (~7 МБ).
+  const BJS_CORE = 'https://cdn.jsdelivr.net/npm/babylonjs@7.54.3/babylon.js';
+  const BJS_WATER = 'https://cdn.jsdelivr.net/npm/babylonjs-materials@7.54.3/babylon.waterMaterial.min.js';
+  let babylonReady = null;
+  function loadScript(src) {
+    return new Promise((ok, bad) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = ok;
+      s.onerror = () => bad(new Error('Не загрузился ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  function loadBabylon() {
+    if (!babylonReady) babylonReady = loadScript(BJS_CORE).then(() => loadScript(BJS_WATER));
+    return babylonReady;
+  }
+
+  function createWorld() {
+    const B = BABYLON;
+    const V3 = (x, y, z) => new B.Vector3(x, y, z);
+
+    const canvas = document.createElement('canvas');
+    canvas.id = 'world';
+    canvas.setAttribute('aria-label', 'Ночной град на воде. Лодкой управляют клавиши W A S D или джойстик.');
+    document.body.insertBefore(canvas, document.body.children[1]);
+
+    // На телефонах облегчаем: меньше пикселей, отражения в половинном разрешении, без мультисэмплинга.
+    const lite = matchMedia('(pointer: coarse)').matches;
+    const engine = new B.Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false }, true);
+    engine.setHardwareScalingLevel(1 / Math.min(devicePixelRatio, lite ? 1.25 : 1.5));
+    const scene = new B.Scene(engine);
+    const FOG = new B.Color3(0.075, 0.105, 0.135);
+    scene.clearColor = new B.Color4(FOG.r, FOG.g, FOG.b, 1);
+    scene.fogMode = B.Scene.FOGMODE_EXP2;
+    scene.fogDensity = 0.012;
+    scene.fogColor = FOG;
+    scene.ambientColor = new B.Color3(0.25, 0.28, 0.34);
+    scene.skipPointerMovePicking = true;
+
+    const MOON_DIR = V3(0.3, 0.42, -0.86).normalize();   // направление НА луну
     const PLAT_Y = 0.8;
-    const LAKE_C = new THREE.Vector2(0, -60), LAKE_R = 128;
+    const LAKE = { x: 0, z: -60, r: 128 };
+    const MAXL = 12;
 
-    // Повторяемый случайный генератор: город одинаков при каждом входе.
-    let seed = 20261030;
+    let seed = 20261031;
     const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
     const pick = a => a[Math.floor(rnd() * a.length)];
 
-    /* ---------- текстуры, нарисованные кодом ---------- */
+    /* ---------- текстуры: рисуем на холсте, из той же картинки строим карту нормалей ---------- */
 
-    function canvasTexture(size, draw) {
+    function paint(size, draw) {
       const c = document.createElement('canvas');
       c.width = c.height = size;
       draw(c.getContext('2d'), size);
-      const t = new THREE.CanvasTexture(c);
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
-      t.anisotropy = 4;
+      return c;
+    }
+    function tex(name, c, wrap = true) {
+      const t = new B.DynamicTexture(name, c, scene, true);
+      t.update(false);
+      if (wrap) t.wrapU = t.wrapV = B.Texture.WRAP_ADDRESSMODE;
+      t.anisotropicFilteringLevel = 4;
       return t;
+    }
+    // Рельеф из яркости: светлое выступает, тёмные щели между брёвнами уходят вглубь.
+    function normalMap(name, src, strength) {
+      const S = src.width;
+      const d = src.getContext('2d').getImageData(0, 0, S, S).data;
+      const h = new Float32Array(S * S);
+      for (let i = 0; i < S * S; i++) h[i] = (d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11) / 255;
+      const c = document.createElement('canvas');
+      c.width = c.height = S;
+      const g = c.getContext('2d');
+      const o = g.createImageData(S, S);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const hx = h[y * S + (x + 1) % S] - h[y * S + (x - 1 + S) % S];
+        const hy = h[((y + 1) % S) * S + x] - h[((y - 1 + S) % S) * S + x];
+        let nx = -hx * strength, ny = hy * strength, nz = 1;
+        const l = Math.hypot(nx, ny, nz);
+        const i = (y * S + x) * 4;
+        o.data[i] = (nx / l * 0.5 + 0.5) * 255;
+        o.data[i + 1] = (ny / l * 0.5 + 0.5) * 255;
+        o.data[i + 2] = (nz / l * 0.5 + 0.5) * 255;
+        o.data[i + 3] = 255;
+      }
+      g.putImageData(o, 0, 0);
+      return tex(name, c);
     }
     const rgb = (c, k = 1, a = 1) => `rgba(${Math.round(c[0] * k)},${Math.round(c[1] * k)},${Math.round(c[2] * k)},${a})`;
 
-    // Брёвна сруба: 8 венцов на 2,8 м, с тенью между венцами, волокнами, сучками и мхом.
-    const logTex = canvasTexture(512, (g, S) => {
+    // Брёвна сруба: 8 венцов на 2,8 м.
+    const logC = paint(512, (g, S) => {
       const n = 8, hgt = S / n;
       for (let i = 0; i < n; i++) {
         const y0 = i * hgt;
         const base = [84 + rnd() * 14, 72 + rnd() * 10, 60 + rnd() * 8];
         const q = g.createLinearGradient(0, y0, 0, y0 + hgt);
-        q.addColorStop(0, rgb(base, 0.25));
+        q.addColorStop(0, rgb(base, 0.2));
         q.addColorStop(0.14, rgb(base, 0.78));
-        q.addColorStop(0.42, rgb(base, 1.08));
+        q.addColorStop(0.42, rgb(base, 1.1));
         q.addColorStop(0.82, rgb(base, 0.66));
-        q.addColorStop(1, rgb(base, 0.2));
+        q.addColorStop(1, rgb(base, 0.16));
         g.fillStyle = q;
         g.fillRect(0, y0, S, hgt);
-        for (let k = 0; k < 36; k++) {
-          g.strokeStyle = `rgba(28,18,10,${0.12 + rnd() * 0.22})`;
-          g.lineWidth = 0.6 + rnd() * 1.2;
+        for (let k = 0; k < 40; k++) {
+          g.strokeStyle = `rgba(28,18,10,${0.12 + rnd() * 0.25})`;
+          g.lineWidth = 0.6 + rnd() * 1.3;
           const yy = y0 + 6 + rnd() * (hgt - 12);
           g.beginPath();
           g.moveTo(0, yy);
-          for (let x = 32; x <= S; x += 32) g.lineTo(x, yy + (rnd() - 0.5) * 2.2);
+          for (let x = 32; x <= S; x += 32) g.lineTo(x, yy + (rnd() - 0.5) * 2.4);
           g.stroke();
         }
         for (let k = 0; k < 3; k++) {
-          const x = rnd() * S, yy = y0 + hgt * (0.3 + rnd() * 0.4);
-          g.fillStyle = 'rgba(30,18,10,0.6)';
-          g.beginPath(); g.ellipse(x, yy, 5 + rnd() * 5, 3 + rnd() * 2, 0, 0, Math.PI * 2); g.fill();
+          g.fillStyle = 'rgba(30,18,10,0.65)';
+          g.beginPath(); g.ellipse(rnd() * S, y0 + hgt * (0.3 + rnd() * 0.4), 5 + rnd() * 5, 3 + rnd() * 2, 0, 0, Math.PI * 2); g.fill();
         }
       }
-      for (let k = 0; k < 260; k++) {
-        const x = rnd() * S, y = S * (0.72 + rnd() * 0.28);
-        g.fillStyle = `rgba(${60 + rnd() * 20},${78 + rnd() * 24},${40 + rnd() * 14},${0.12 + rnd() * 0.25})`;
-        g.beginPath(); g.arc(x, y, 3 + rnd() * 9, 0, Math.PI * 2); g.fill();
+      for (let k = 0; k < 280; k++) {
+        g.fillStyle = `rgba(${60 + rnd() * 20},${80 + rnd() * 24},${42 + rnd() * 14},${0.12 + rnd() * 0.25})`;
+        g.beginPath(); g.arc(rnd() * S, S * (0.7 + rnd() * 0.3), 3 + rnd() * 9, 0, Math.PI * 2); g.fill();
       }
-      g.fillStyle = 'rgba(120,130,140,0.08)';
-      g.fillRect(0, 0, S, S);
     });
-
-    // Тёсовая кровля: ряды дранки с мхом.
-    const roofTex = canvasTexture(512, (g, S) => {
+    const roofC = paint(512, (g, S) => {
       g.fillStyle = '#2b2620';
       g.fillRect(0, 0, S, S);
-      const rowH = 28;
-      for (let y = 0, r = 0; y < S; y += rowH, r++) {
+      for (let y = 0, r = 0; y < S; y += 28, r++) {
         let x = (r % 2) * -14;
         while (x < S) {
           const w = 18 + rnd() * 18;
-          const v = 0.6 + rnd() * 0.5;
-          g.fillStyle = rgb([70, 62, 52], v);
-          g.fillRect(x + 1, y + 1, w - 2, rowH - 2);
-          g.fillStyle = 'rgba(0,0,0,0.35)';
-          g.fillRect(x + 1, y + rowH - 6, w - 2, 5);
+          g.fillStyle = rgb([72, 64, 54], 0.6 + rnd() * 0.5);
+          g.fillRect(x + 1, y + 1, w - 2, 26);
+          g.fillStyle = 'rgba(0,0,0,0.4)';
+          g.fillRect(x + 1, y + 21, w - 2, 6);
           x += w;
         }
       }
       for (let k = 0; k < 420; k++) {
-        g.fillStyle = `rgba(${58 + rnd() * 30},${82 + rnd() * 30},${38 + rnd() * 16},${0.1 + rnd() * 0.3})`;
+        g.fillStyle = `rgba(${58 + rnd() * 30},${84 + rnd() * 30},${38 + rnd() * 16},${0.1 + rnd() * 0.3})`;
         g.beginPath(); g.arc(rnd() * S, rnd() * S, 2 + rnd() * 12, 0, Math.PI * 2); g.fill();
       }
     });
-
-    // Доски помостов, мокрые и тёмные.
-    const boardTex = canvasTexture(512, (g, S) => {
-      const w = 32;
-      for (let x = 0; x < S; x += w) {
-        const base = [70 + rnd() * 18, 58 + rnd() * 14, 46 + rnd() * 10];
-        g.fillStyle = rgb(base, 0.85);
-        g.fillRect(x, 0, w, S);
+    const boardC = paint(512, (g, S) => {
+      for (let x = 0; x < S; x += 32) {
+        g.fillStyle = rgb([70 + rnd() * 18, 58 + rnd() * 14, 46 + rnd() * 10], 0.85);
+        g.fillRect(x, 0, 32, S);
         for (let k = 0; k < 10; k++) {
           g.strokeStyle = `rgba(20,14,10,${0.15 + rnd() * 0.2})`;
-          g.beginPath();
-          const xx = x + 3 + rnd() * (w - 6);
-          g.moveTo(xx, 0); g.lineTo(xx + (rnd() - 0.5) * 3, S); g.stroke();
+          const xx = x + 3 + rnd() * 26;
+          g.beginPath(); g.moveTo(xx, 0); g.lineTo(xx + (rnd() - 0.5) * 3, S); g.stroke();
         }
-        g.fillStyle = 'rgba(10,6,4,0.7)';
+        g.fillStyle = 'rgba(10,6,4,0.75)';
         g.fillRect(x, 0, 2, S);
-        g.fillRect(x, rnd() * S, w, 2);
+        g.fillRect(x, rnd() * S, 32, 2);
       }
     });
-
-    // Окно: тёплый свет за переплётом.
-    const windowTex = canvasTexture(128, (g, S) => {
+    const windowC = paint(128, (g, S) => {
       const q = g.createRadialGradient(S / 2, S * 0.55, 4, S / 2, S * 0.55, S * 0.7);
       q.addColorStop(0, '#ffe2a0');
       q.addColorStop(0.5, '#f0a050');
@@ -640,478 +686,449 @@ function boot(imgGate, imgCity) {
       g.moveTo(0, 2 * S / 3); g.lineTo(S, 2 * S / 3);
       g.stroke();
     });
-    windowTex.wrapS = windowTex.wrapT = THREE.ClampToEdgeWrapping;
-
-    // Мягкое свечение для фонарей, окон и костров.
-    const glowTex = (() => {
-      const c = document.createElement('canvas');
-      c.width = c.height = 128;
-      const g = c.getContext('2d');
-      const q = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    const flareC = paint(64, (g, S) => {
+      const q = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
       q.addColorStop(0, 'rgba(255,255,255,1)');
-      q.addColorStop(0.2, 'rgba(255,255,255,0.45)');
+      q.addColorStop(0.35, 'rgba(255,255,255,0.5)');
       q.addColorStop(1, 'rgba(255,255,255,0)');
       g.fillStyle = q;
-      g.fillRect(0, 0, 128, 128);
-      return new THREE.CanvasTexture(c);
-    })();
-
-    // Планарная развёртка: текстура ложится в метрах, одинаково на всех домах.
-    function worldUV(geo, scale = 1 / 2.8) {
-      const p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv;
-      for (let i = 0; i < p.count; i++) {
-        const nx = Math.abs(n.getX(i)), ny = Math.abs(n.getY(i)), nz = Math.abs(n.getZ(i));
-        let u, v;
-        if (ny > nx && ny > nz) { u = p.getX(i); v = p.getZ(i); }
-        else if (nx > nz) { u = p.getZ(i); v = p.getY(i); }
-        else { u = p.getX(i); v = p.getY(i); }
-        uv.setXY(i, u * scale, v * scale);
+      g.fillRect(0, 0, S, S);
+    });
+    const ringC = paint(128, (g, S) => {
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineWidth = 6;
+      g.filter = 'blur(2px)';
+      g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 8, 0, Math.PI * 2); g.stroke();
+    });
+    // Бесшовная рябь для воды: сумма волн с целым числом периодов.
+    const waveC = paint(256, (g, S) => {
+      const img = g.createImageData(S, S);
+      const waves = Array.from({ length: 14 }, () => ({ kx: Math.round((rnd() - 0.5) * 16), ky: Math.round((rnd() - 0.5) * 16), p: rnd() * 6.283, a: 0.3 + rnd() }));
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        let v = 0;
+        for (const w of waves) v += Math.sin((w.kx * x + w.ky * y) / S * 6.283 + w.p) * w.a;
+        const c = 128 + v * 9;
+        const i = (y * S + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = c;
+        img.data[i + 3] = 255;
       }
-      uv.needsUpdate = true;
-      return geo;
+      g.putImageData(img, 0, 0);
+    });
+
+    // Планарная развёртка в метрах: одна текстура одинаково ложится на все стены.
+    function worldUV(mesh, scale = 1 / 2.8) {
+      const p = mesh.getVerticesData(B.VertexBuffer.PositionKind);
+      const n = mesh.getVerticesData(B.VertexBuffer.NormalKind);
+      const uv = new Float32Array(p.length / 3 * 2);
+      for (let i = 0; i < p.length / 3; i++) {
+        const nx = Math.abs(n[i * 3]), ny = Math.abs(n[i * 3 + 1]), nz = Math.abs(n[i * 3 + 2]);
+        let u, v;
+        if (ny > nx && ny > nz) { u = p[i * 3]; v = p[i * 3 + 2]; }
+        else if (nx > nz) { u = p[i * 3 + 2]; v = p[i * 3 + 1]; }
+        else { u = p[i * 3]; v = p[i * 3 + 1]; }
+        uv[i * 2] = u * scale;
+        uv[i * 2 + 1] = v * scale;
+      }
+      mesh.setVerticesData(B.VertexBuffer.UVKind, uv, true);
+      return mesh;
     }
 
-    const logMat = new THREE.MeshLambertMaterial({ map: logTex, bumpMap: logTex, bumpScale: 2.5 });
-    const roofMat = new THREE.MeshLambertMaterial({ map: roofTex, bumpMap: roofTex, bumpScale: 2 });
-    const boardMat = new THREE.MeshLambertMaterial({ map: boardTex, bumpMap: boardTex, bumpScale: 1.5, color: 0xb0a090 });
-    const darkWood = new THREE.MeshLambertMaterial({ color: 0x2a1d14 });
-    const pileMat = new THREE.MeshLambertMaterial({ color: 0x1d1610 });
-    const winLit = [1, 0.85, 0.65].map(k => new THREE.MeshBasicMaterial({ map: windowTex, color: new THREE.Color(k * 1.6, k * 1.3, k * 1.0), fog: true }));
-    const winDark = new THREE.MeshLambertMaterial({ color: 0x0c0f12 });
-    const doorMat = new THREE.MeshLambertMaterial({ map: boardTex, color: 0x5a4636 });
+    function mat(name, opts) {
+      const m = new B.StandardMaterial(name, scene);
+      m.maxSimultaneousLights = MAXL;
+      m.specularColor = new B.Color3(0.05, 0.05, 0.05);
+      Object.assign(m, opts);
+      return m;
+    }
+    const logMat = mat('logs', { diffuseTexture: tex('logT', logC), bumpTexture: normalMap('logN', logC, 6) });
+    const roofMat = mat('roof', { diffuseTexture: tex('roofT', roofC), bumpTexture: normalMap('roofN', roofC, 5) });
+    const boardMat = mat('boards', { diffuseTexture: tex('boardT', boardC), bumpTexture: normalMap('boardN', boardC, 4), specularColor: new B.Color3(0.12, 0.12, 0.12) });
+    const darkWood = mat('dark', { diffuseColor: new B.Color3(0.16, 0.11, 0.08) });
+    const winLit = mat('win', { emissiveTexture: tex('winT', windowC, false), disableLighting: true, emissiveColor: new B.Color3(0.95, 0.62, 0.34) });
+    const winDark = mat('winDark', { diffuseColor: new B.Color3(0.03, 0.04, 0.05) });
+    const lampMat = mat('lamp', { emissiveColor: new B.Color3(1.0, 0.66, 0.34), disableLighting: true });
+    const flare = tex('flare', flareC, false);
+    flare.hasAlpha = true;
 
     /* ---------- свет ---------- */
 
-    scene.add(new THREE.HemisphereLight(0x34465f, 0x0d0f12, 1.5));
-    const moon = new THREE.DirectionalLight(0xa6bbe0, 0.95);
-    moon.position.copy(MOON_DIR).multiplyScalar(100);
-    scene.add(moon);
-    // Рассеянный свет ночного неба со стороны зрителя, чтобы фасады не уходили в чёрное.
-    const fill = new THREE.DirectionalLight(0x5a6c8a, 0.6);
-    fill.position.set(-30, 40, 90);
-    scene.add(fill);
+    const hemi = new B.HemisphericLight('sky', V3(0, 1, 0), scene);
+    hemi.intensity = 0.62;
+    hemi.diffuse = new B.Color3(0.55, 0.65, 0.85);
+    hemi.groundColor = new B.Color3(0.06, 0.06, 0.07);
+    hemi.specular = new B.Color3(0, 0, 0);
+    const moon = new B.DirectionalLight('moon', MOON_DIR.scale(-1), scene);
+    moon.intensity = 0.7;
+    moon.diffuse = new B.Color3(0.65, 0.75, 0.95);
+    moon.specular = new B.Color3(0.6, 0.7, 0.9);
+    const fill = new B.DirectionalLight('fill', V3(0.3, -0.5, -0.8), scene);
+    fill.intensity = 0.32;
+    fill.diffuse = new B.Color3(0.45, 0.52, 0.7);
+    fill.specular = new B.Color3(0, 0, 0);
 
-    // Тёплых источников много, а настоящих ламп — восемь ближайших к лодке.
+    // Тёплых источников много, а настоящих ламп — несколько ближайших к лодке.
     const sources = [];
-    const POOL = 8;
-    const pool = Array.from({ length: POOL }, () => {
-      const l = new THREE.PointLight(0xffa860, 0, 16, 2);
-      scene.add(l);
+    const POOL = 6;
+    const pool = Array.from({ length: POOL }, (_, i) => {
+      const l = new B.PointLight('warm' + i, V3(0, -50, 0), scene);
+      l.diffuse = new B.Color3(1, 0.62, 0.32);
+      l.specular = new B.Color3(0.5, 0.3, 0.15);
+      l.range = 16;
+      l.intensity = 0;
       return l;
     });
-    function glow(pos, size, color, opacity = 0.8) {
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: glowTex, color, transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending
-      }));
-      s.position.copy(pos);
-      s.scale.setScalar(size);
-      scene.add(s);
-      return s;
+    const lightSource = (pos, kind) => sources.push({ pos: pos.clone(), kind, phase: rnd() * 10 });
+
+    /* ---------- геометрия построек ---------- */
+
+    const byMat = new Map();   // всё статичное потом сливаем по материалу — так в разы меньше вызовов отрисовки
+    function keep(mesh, material) {
+      mesh.material = material;
+      if (!byMat.has(material)) byMat.set(material, []);
+      byMat.get(material).push(mesh);
+      return mesh;
     }
-    function lightSource(pos, power, kind = 'lamp') {
-      sources.push({ pos: pos.clone(), power, kind, phase: rnd() * 10 });
+    function box(w, h, d, material, uv = 1 / 2.8) {
+      const m = B.MeshBuilder.CreateBox('b', { width: w, height: h, depth: d }, scene);
+      if (uv) worldUV(m, uv);
+      return keep(m, material);
+    }
+    // Выпуклая призма (фронтон): многоугольник в плоскости xy, вытянут по z.
+    function prism(pts, depth, material) {
+      const pos = [], idx = [];
+      const n = pts.length, hz = depth / 2;
+      for (const [x, y] of pts) pos.push(x, y, hz);
+      for (const [x, y] of pts) pos.push(x, y, -hz);
+      for (let i = 1; i < n - 1; i++) { idx.push(0, i + 1, i); idx.push(n, n + i, n + i + 1); }
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        idx.push(i, j, n + j, i, n + j, n + i);
+      }
+      const vd = new B.VertexData();
+      vd.positions = pos;
+      vd.indices = idx;
+      const nrm = [];
+      B.VertexData.ComputeNormals(pos, idx, nrm);
+      vd.normals = nrm;
+      const m = new B.Mesh('prism', scene);
+      vd.applyToMesh(m, true);
+      m.convertToFlatShadedMesh();
+      worldUV(m);
+      return keep(m, material);
+    }
+    function place(mesh, parent, x, y, z, rx = 0, ry = 0, rz = 0) {
+      mesh.parent = parent;
+      mesh.position.set(x, y, z);
+      mesh.rotation.set(rx, ry, rz);
+      return mesh;
+    }
+    // Двускатная кровля из двух скатов-досок, конёк сверху.
+    function gableRoof(node, w, d, rh, y, over = 0.7) {
+      const half = w / 2 + over;
+      const a = Math.atan2(rh, w / 2);
+      const L = half / Math.cos(a) + 0.15;
+      for (const s of [-1, 1]) {
+        const slab = box(L, 0.24, d + over * 2, roofMat, 1 / 3);
+        place(slab, node, s * half / 2, y + rh - half / 2 * Math.tan(a) + 0.12, 0, 0, 0, -s * a);
+      }
+      place(box(0.34, 0.34, d + over * 2 + 0.2, darkWood, 0), node, 0, y + rh + 0.12, 0);
     }
 
-    /* ---------- постройки ---------- */
-
-    const v2 = (x, y) => new THREE.Vector2(x, y);
-    const colliders = [];   // прямоугольники помостов: {x0, x1, z0, z1}
-
-    function addWindows(g, w, d, floors, litChance) {
-      // Окна по длинным стенам и под фронтоном; часть горит.
-      const faces = [
-        { axis: 'x', sign: 1, len: d }, { axis: 'x', sign: -1, len: d },
-        { axis: 'z', sign: 1, len: w }, { axis: 'z', sign: -1, len: w }
-      ];
+    function izba(x, z, rot, w, d, floors, litChance = 0.6) {
+      const node = new B.TransformNode('izba', scene);
+      node.position.set(x, PLAT_Y, z);
+      node.rotation.y = rot;
+      const h = floors * 3.0 + 0.4;
+      place(box(w, h, d, logMat), node, 0, h / 2, 0);
+      // Выпуски брёвен на углах («в обло»).
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        place(box(0.38, h, 0.38, logMat), node, sx * (w / 2 + 0.12), h / 2, sz * (d / 2 + 0.12));
+      }
+      const rh = w * 0.48;
+      place(prism([[-w / 2, 0], [w / 2, 0], [0, rh - 0.2]], d - 0.04, logMat), node, 0, h, 0);
+      gableRoof(node, w, d, rh, h);
+      // Причелины и полотенце на фронтоне.
+      place(box(0.25, 1.1, 0.12, darkWood, 0), node, 0, h + rh - 0.6, d / 2 + 0.75);
+      const attic = B.MeshBuilder.CreatePlane('w', { width: 0.6, height: 0.75 }, scene);
+      place(keep(attic, rnd() < 0.5 ? winLit : winDark), node, 0, h + rh * 0.38, -(d / 2 + 0.03), 0, 0, 0);
+      // Окна с наличниками по стенам, часть горит.
+      const faces = [[w / 2, 0, -Math.PI / 2, d], [-w / 2, 0, Math.PI / 2, d], [0, d / 2, Math.PI, w], [0, -d / 2, 0, w]];
       for (let f = 0; f < floors; f++) {
         const y = 1.6 + f * 3.0;
-        for (const face of faces) {
-          const n = Math.max(1, Math.floor(face.len / 2.6));
+        for (const [fx, fz, ry, len] of faces) {
+          const n = Math.max(1, Math.floor(len / 2.6));
           for (let i = 0; i < n; i++) {
             if (rnd() < 0.25) continue;
-            const off = (i - (n - 1) / 2) * (face.len / n);
+            const off = (i - (n - 1) / 2) * (len / n);
             const lit = rnd() < litChance;
-            const m = new THREE.Mesh(new THREE.PlaneGeometry(0.75, 0.95), lit ? pick(winLit) : winDark);
-            if (face.axis === 'x') { m.position.set(face.sign * (w / 2 + 0.03), y, off); m.rotation.y = face.sign * Math.PI / 2; }
-            else { m.position.set(off, y, face.sign * (d / 2 + 0.03)); m.rotation.y = face.sign > 0 ? 0 : Math.PI; }
-            g.add(m);
-            // Наличник.
-            const frame = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.2, 0.06), darkWood);
-            frame.position.copy(m.position);
-            frame.rotation.copy(m.rotation);
-            frame.translateZ(-0.05);   // наличник за стеклом, иначе он закрывает окно
-            g.add(frame);
-            if (lit) g.userData.lights.push(m.position.clone().add(new THREE.Vector3(face.axis === 'x' ? face.sign * 0.6 : 0, 0, face.axis === 'z' ? face.sign * 0.6 : 0)));
+            const px = fx !== 0 ? fx * 1.0 + Math.sign(fx) * 0.03 : off;
+            const pz = fz !== 0 ? fz + Math.sign(fz) * 0.03 : off;
+            const win = B.MeshBuilder.CreatePlane('w', { width: 0.75, height: 0.95 }, scene);
+            place(keep(win, lit ? winLit : winDark), node, px, y, pz, 0, ry, 0);
+            const frame = box(0.95, 1.2, 0.06, darkWood, 0);
+            place(frame, node, px - (fx !== 0 ? Math.sign(fx) * 0.04 : 0), y, pz - (fz !== 0 ? Math.sign(fz) * 0.04 : 0), 0, ry, 0);
+            const sill = box(1.1, 0.1, 0.16, darkWood, 0);
+            place(sill, node, px, y - 0.62, pz, 0, ry, 0);
+            if (lit) {
+              node.computeWorldMatrix(true);
+              const out = V3(px * 1.15, y, pz * 1.15);
+              lightSource(B.Vector3.TransformCoordinates(out, node.getWorldMatrix()), 'window');
+            }
           }
         }
       }
-    }
-
-    function gableRoof(w, d, rh, over = 0.7) {
-      const W2 = w / 2 + over, t = 0.3;
-      const shape = new THREE.Shape([v2(-W2, 0), v2(0, rh), v2(W2, 0), v2(W2, -t), v2(0, rh - t * 1.3), v2(-W2, -t)]);
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: d + over * 2, bevelEnabled: false });
-      geo.translate(0, 0, -(d + over * 2) / 2);
-      return worldUV(geo, 1 / 3);
-    }
-
-    // Изба: сруб, двускатная кровля, фронтон, окна с наличниками, дверь, у двухэтажных — гульбище.
-    function izba(x, z, rot, w, d, floors, litChance = 0.6) {
-      const g = new THREE.Group();
-      g.userData.lights = [];
-      const h = floors * 3.0 + 0.4;
-      const walls = new THREE.Mesh(worldUV(new THREE.BoxGeometry(w, h, d)), logMat);
-      walls.position.y = h / 2;
-      g.add(walls);
-      const rh = w * 0.48;
-      const roof = new THREE.Mesh(gableRoof(w, d, rh), roofMat);
-      roof.position.y = h + 0.02;
-      g.add(roof);
-      const gable = new THREE.Mesh(worldUV(new THREE.ExtrudeGeometry(new THREE.Shape([v2(-w / 2, 0), v2(0, rh - 0.3), v2(w / 2, 0)]), { depth: d - 0.04, bevelEnabled: false }).translate(0, 0, -(d - 0.04) / 2)), logMat);
-      gable.position.y = h;
-      g.add(gable);
-      // Охлупень с «коньком» над фронтоном.
-      const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, d + 1.6), darkWood);
-      ridge.position.y = h + rh + 0.05;
-      g.add(ridge);
-      const horse = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.9, 0.5), darkWood);
-      horse.position.set(0, h + rh + 0.45, d / 2 + 0.8);
-      horse.rotation.x = -0.4;
-      g.add(horse);
-      // Чердачное окно во фронтоне.
-      const attic = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.7), rnd() < 0.5 ? pick(winLit) : winDark);
-      attic.position.set(0, h + rh * 0.4, d / 2 + 0.02);
-      g.add(attic);
-      addWindows(g, w, d, floors, litChance);
-      const door = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.0), doorMat);
-      door.position.set(w * 0.25, 1.0, d / 2 + 0.04);
-      g.add(door);
+      // Крыльцо с дверью на фасаде (минус z — к каналу).
+      const door = box(1.1, 2.0, 0.08, mat('door', { diffuseTexture: logMat.diffuseTexture, diffuseColor: new B.Color3(0.7, 0.55, 0.45) }), 1 / 2);
+      place(door, node, w * 0.25, 1.0, -(d / 2 + 0.05));
       if (floors > 1) {
-        // Гульбище вдоль фасада со столбиками.
-        const deck = new THREE.Mesh(worldUV(new THREE.BoxGeometry(w + 0.6, 0.18, 1.3)), boardMat);
-        deck.position.set(0, 3.2, d / 2 + 0.65);
-        g.add(deck);
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.12, 0.12), darkWood);
-        rail.position.set(0, 4.15, d / 2 + 1.25);
-        g.add(rail);
-        for (let i = 0; i <= Math.round(w / 0.9); i++) {
-          const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.9, 0.08), darkWood);
-          post.position.set(-w / 2 - 0.3 + i * (w + 0.6) / Math.round(w / 0.9), 3.7, d / 2 + 1.25);
-          g.add(post);
-        }
+        place(box(w + 0.6, 0.18, 1.3, boardMat, 1 / 4), node, 0, 3.2, -(d / 2 + 0.65));
+        place(box(w + 0.6, 0.12, 0.12, darkWood, 0), node, 0, 4.15, -(d / 2 + 1.25));
+        const n = Math.round(w / 0.9);
+        for (let i = 0; i <= n; i++) place(box(0.08, 0.9, 0.08, darkWood, 0), node, -w / 2 - 0.3 + i * (w + 0.6) / n, 3.7, -(d / 2 + 1.25));
       }
-      g.position.set(x, PLAT_Y, z);
-      g.rotation.y = rot;
-      scene.add(g);
-      g.updateMatrixWorld(true);
-      for (const p of g.userData.lights) lightSource(p.applyMatrix4(g.matrixWorld), 0.5, 'window');
-      return g;
+      return node;
     }
 
-    function onion(scale = 1) {
-      const pts = [[0, 0], [0.5, 0.05], [0.72, 0.35], [0.68, 0.7], [0.45, 1.0], [0.16, 1.3], [0.02, 1.62]].map(([x, y]) => v2(x * scale, y * scale));
-      return new THREE.LatheGeometry(pts, 12);
-    }
-
-    // Шатровая башня: восьмерик, гульбище, светлица, шатёр, барабан с маковкой.
     function tower(x, z, r, h, litChance = 0.7) {
-      const g = new THREE.Group();
-      g.userData.lights = [];
-      const body = new THREE.Mesh(worldUV(new THREE.CylinderGeometry(r, r * 1.06, h, 8)), logMat);
-      body.position.y = h / 2;
-      g.add(body);
-      const gal = new THREE.Mesh(worldUV(new THREE.CylinderGeometry(r + 0.9, r + 0.9, 0.25, 8)), boardMat);
-      gal.position.y = h;
-      g.add(gal);
+      const node = new B.TransformNode('tower', scene);
+      node.position.set(x, PLAT_Y, z);
+      const cyl = (top, bot, height, material, uv = 1 / 2.8, tess = 8) => {
+        const m = B.MeshBuilder.CreateCylinder('c', { diameterTop: top * 2, diameterBottom: bot * 2, height, tessellation: tess }, scene);
+        if (uv) worldUV(m, uv);
+        return keep(m, material);
+      };
+      place(cyl(r, r * 1.06, h, logMat), node, 0, h / 2, 0);
+      place(cyl(r + 0.9, r + 0.9, 0.25, boardMat, 1 / 4), node, 0, h, 0);
       for (let i = 0; i < 16; i++) {
         const a = i / 16 * Math.PI * 2;
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.0, 0.1), darkWood);
-        post.position.set(Math.cos(a) * (r + 0.8), h + 0.6, Math.sin(a) * (r + 0.8));
-        g.add(post);
+        place(box(0.1, 1.0, 0.1, darkWood, 0), node, Math.cos(a) * (r + 0.8), h + 0.6, Math.sin(a) * (r + 0.8));
       }
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(r + 0.8, 0.06, 4, 8), darkWood);
-      ring.rotation.x = Math.PI / 2;
-      ring.rotation.z = Math.PI / 8;
-      ring.position.y = h + 1.1;
-      g.add(ring);
-      const top = new THREE.Mesh(worldUV(new THREE.CylinderGeometry(r * 0.78, r * 0.78, 2.4, 8)), logMat);
-      top.position.y = h + 1.2;
-      g.add(top);
-      for (let i = 0; i < 4; i++) {
-        const a = i / 4 * Math.PI * 2 + Math.PI / 8;
+      const ring = keep(B.MeshBuilder.CreateTorus('t', { diameter: (r + 0.8) * 2, thickness: 0.1, tessellation: 16 }, scene), darkWood);
+      place(ring, node, 0, h + 1.1, 0);
+      place(cyl(r * 0.78, r * 0.78, 2.4, logMat), node, 0, h + 1.2, 0);
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * Math.PI * 2 + Math.PI / 8;
+        const upper = i % 2 === 0;
+        const rr = (upper ? r * 0.78 : r) * Math.cos(Math.PI / 8) + 0.04;
         const lit = rnd() < litChance;
-        const win = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.9), lit ? pick(winLit) : winDark);
-        const rr = r * 0.78 * Math.cos(Math.PI / 8) + 0.03;
-        win.position.set(Math.cos(a) * rr, h + 1.3, Math.sin(a) * rr);
-        win.rotation.y = Math.PI / 2 - a;
-        g.add(win);
-        if (lit) g.userData.lights.push(win.position.clone().multiplyScalar(1.3));
-        const lw = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.0), lit ? pick(winLit) : winDark);
-        lw.position.set(Math.cos(a + Math.PI / 4) * (r * Math.cos(Math.PI / 8) + 0.03), h * 0.55, Math.sin(a + Math.PI / 4) * (r * Math.cos(Math.PI / 8) + 0.03));
-        lw.rotation.y = Math.PI / 2 - (a + Math.PI / 4);
-        g.add(lw);
+        const win = B.MeshBuilder.CreatePlane('w', { width: 0.6, height: 0.9 }, scene);
+        const y = upper ? h + 1.3 : h * 0.55;
+        place(keep(win, lit ? winLit : winDark), node, Math.cos(a) * rr, y, Math.sin(a) * rr, 0, Math.atan2(-Math.cos(a), -Math.sin(a)), 0);
+        if (lit) lightSource(V3(x + Math.cos(a) * rr * 1.3, PLAT_Y + y, z + Math.sin(a) * rr * 1.3), 'window');
       }
       const coneH = r * 2.6;
-      const cone = new THREE.Mesh(worldUV(new THREE.ConeGeometry(r + 1.1, coneH, 8), 1 / 3), roofMat);
-      cone.position.y = h + 2.4 + coneH / 2;
-      g.add(cone);
-      const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 1.1, 8), darkWood);
-      drum.position.y = h + 2.4 + coneH + 0.3;
-      g.add(drum);
-      const dome = new THREE.Mesh(onion(0.75), roofMat);
-      dome.position.y = h + 2.4 + coneH + 0.8;
-      g.add(dome);
-      const spike = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.05, 1.2, 5), darkWood);
-      spike.position.y = h + 2.4 + coneH + 2.6;
-      g.add(spike);
-      g.position.set(x, PLAT_Y, z);
-      scene.add(g);
-      g.updateMatrixWorld(true);
-      for (const p of g.userData.lights) lightSource(p.applyMatrix4(g.matrixWorld), 0.5, 'window');
-      g.userData.bellPos = new THREE.Vector3(x, PLAT_Y + h + 1.5, z);
-      return g;
+      place(cyl(0, r + 1.1, coneH, roofMat, 1 / 3), node, 0, h + 2.4 + coneH / 2, 0);
+      place(cyl(0.32, 0.36, 1.1, darkWood, 0), node, 0, h + 2.4 + coneH + 0.3, 0);
+      const s = 0.75;
+      const shape = [[0, 0], [0.5, 0.05], [0.72, 0.35], [0.68, 0.7], [0.45, 1.0], [0.16, 1.3], [0.02, 1.62]].map(([a, b]) => V3(a * s, b * s, 0));
+      const dome = keep(B.MeshBuilder.CreateLathe('dome', { shape, tessellation: 14 }, scene), roofMat);
+      place(dome, node, 0, h + 2.4 + coneH + 0.8, 0);
+      place(cyl(0.02, 0.05, 1.2, darkWood, 0, 5), node, 0, h + 2.4 + coneH + 2.6, 0);
+      return V3(x, PLAT_Y + h + 1.5, z);
     }
 
-    // Фонарь на столбе: короб со светом, свечение и тёплая лампа рядом.
-    const lanternBox = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 1.5, 0.8) });
+    // Фонарь на столбе.
     function lantern(x, y, z, h = 2.4) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, h, 6), darkWood);
-      post.position.set(x, y + h / 2, z);
-      scene.add(post);
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.06, 0.06), darkWood);
-      arm.position.set(x + 0.25, y + h - 0.05, z);
-      scene.add(arm);
-      const box = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.32, 0.22), lanternBox);
-      box.position.set(x + 0.5, y + h - 0.32, z);
-      scene.add(box);
-      const p = box.position.clone();
-      glow(p, 2.4, 0xffb36b, 0.75);
-      lightSource(p, 1, 'lamp');
+      keep(B.MeshBuilder.CreateCylinder('post', { diameterTop: 0.14, diameterBottom: 0.18, height: h, tessellation: 6 }, scene), darkWood).position.set(x, y + h / 2, z);
+      box(0.6, 0.06, 0.06, darkWood, 0).position.set(x + 0.25, y + h - 0.05, z);
+      const p = V3(x + 0.5, y + h - 0.32, z);
+      box(0.24, 0.34, 0.24, lampMat, 0).position.copyFrom(p);
+      lightSource(p, 'lamp');
     }
 
-    // Костёр: поленья, языки пламени, искры, живой свет.
+    // Костёр: поленья, пламя, дым и искры из системы частиц.
     const fires = [];
-    const flameMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: clock },
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      vertexShader: passUv,
-      fragmentShader: `
-        uniform float uTime;
-        varying vec2 vUv;
-        float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-        float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
-        void main() {
-          vec2 p = vUv;
-          float n = noise(vec2(p.x * 4.0, p.y * 3.0 - uTime * 3.2)) * 0.6 + noise(vec2(p.x * 9.0, p.y * 6.0 - uTime * 5.0)) * 0.4;
-          float w = (1.0 - p.y) * 0.42 + 0.05;
-          float shape = smoothstep(w, w * 0.35, abs(p.x - 0.5 + (n - 0.5) * 0.25 * p.y)) * smoothstep(0.0, 0.08, p.y);
-          float a = shape * smoothstep(1.0, 0.25, p.y + n * 0.35);
-          vec3 c = mix(vec3(1.0, 0.3, 0.05), vec3(1.0, 0.85, 0.45), smoothstep(0.6, 0.0, p.y + (1.0 - shape) * 0.5));
-          gl_FragColor = vec4(c * a * 1.6, 1.0);
-        }
-      `
-    });
+    function particles(name, at, o) {
+      const ps = new B.ParticleSystem(name, o.capacity, scene);
+      ps.particleTexture = flare;
+      ps.emitter = at;
+      ps.minEmitBox = V3(-o.spread, 0, -o.spread);
+      ps.maxEmitBox = V3(o.spread, 0, o.spread);
+      ps.color1 = o.c1;
+      ps.color2 = o.c2;
+      ps.colorDead = o.dead;
+      ps.minSize = o.size[0];
+      ps.maxSize = o.size[1];
+      ps.minLifeTime = o.life[0];
+      ps.maxLifeTime = o.life[1];
+      ps.emitRate = o.rate;
+      ps.blendMode = o.add ? B.ParticleSystem.BLENDMODE_ADD : B.ParticleSystem.BLENDMODE_STANDARD;
+      ps.gravity = V3(0, o.lift, 0);
+      ps.direction1 = V3(-o.dir, 1, -o.dir);
+      ps.direction2 = V3(o.dir, 1.4, o.dir);
+      ps.minEmitPower = o.power[0];
+      ps.maxEmitPower = o.power[1];
+      ps.minAngularSpeed = -1;
+      ps.maxAngularSpeed = 1;
+      ps.updateSpeed = 0.016;
+      ps.start();
+      return ps;
+    }
     function bonfire(x, z) {
       const y = PLAT_Y + 0.2;
-      const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.0, 0.2, 10), new THREE.MeshLambertMaterial({ color: 0x2a2622 }));
-      pad.position.set(x, PLAT_Y + 0.1, z);
-      scene.add(pad);
+      keep(B.MeshBuilder.CreateCylinder('pad', { diameterTop: 1.8, diameterBottom: 2.0, height: 0.2, tessellation: 10 }, scene), mat('stone', { diffuseColor: new B.Color3(0.16, 0.15, 0.14) })).position.set(x, PLAT_Y + 0.1, z);
       for (let i = 0; i < 5; i++) {
-        const log = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 1.1, 6), darkWood);
+        const log = keep(B.MeshBuilder.CreateCylinder('log', { diameterTop: 0.16, diameterBottom: 0.2, height: 1.1, tessellation: 6 }, scene), darkWood);
         log.position.set(x, y + 0.25, z);
-        log.rotation.set(0.9, i / 5 * Math.PI * 2, 0, 'YXZ');
-        scene.add(log);
+        log.rotation.set(0.9, i / 5 * Math.PI * 2, 0);
       }
-      const flames = [];
-      for (let i = 0; i < 3; i++) {
-        const f = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.9), flameMat);
-        f.position.set(x, y + 0.95, z);
-        f.rotation.y = i / 3 * Math.PI;
-        scene.add(f);
-        flames.push(f);
-      }
-      const gl = glow(new THREE.Vector3(x, y + 0.9, z), 6, 0xff8a3a, 0.55);
-      lightSource(new THREE.Vector3(x, y + 1.2, z), 2.4, 'fire');
-      fires.push({ pos: new THREE.Vector3(x, y, z), glow: gl });
+      const at = V3(x, y + 0.25, z);
+      particles('flame', at, { capacity: 160, spread: 0.25, c1: new B.Color4(1, 0.75, 0.35, 1), c2: new B.Color4(1, 0.4, 0.1, 1), dead: new B.Color4(0.3, 0.05, 0, 0), size: [0.35, 0.8], life: [0.25, 0.6], rate: 110, add: true, lift: 2.5, dir: 0.18, power: [0.6, 1.2] });
+      particles('smoke', V3(x, y + 1.2, z), { capacity: 60, spread: 0.2, c1: new B.Color4(0.18, 0.17, 0.17, 0.35), c2: new B.Color4(0.12, 0.12, 0.13, 0.25), dead: new B.Color4(0.1, 0.1, 0.12, 0), size: [0.8, 1.8], life: [2.5, 4.5], rate: 12, add: false, lift: 0.4, dir: 0.25, power: [0.3, 0.6] });
+      particles('sparks', at, { capacity: 40, spread: 0.3, c1: new B.Color4(1, 0.7, 0.3, 1), c2: new B.Color4(1, 0.5, 0.15, 1), dead: new B.Color4(1, 0.3, 0, 0), size: [0.04, 0.09], life: [0.8, 1.8], rate: 14, add: true, lift: 1.5, dir: 0.4, power: [1, 2.2] });
+      lightSource(V3(x, y + 1.2, z), 'fire');
+      fires.push(new THREE.Vector3(x, y, z));
     }
 
-    // Горожане — вырезаны с картинки города и стоят как плоские фигуры, повёрнутые к камере.
-    // Свет на них уже нарисован, поэтому вдали от огня их притемняем.
-    const PEOPLE_ATLAS = { size: [632, 384], rects: [[0, 36, 114, 348], [122, 12, 120, 372], [250, 18, 138, 366], [396, 0, 228, 384]] };
-    const peopleTex = new THREE.TextureLoader().load(PEOPLE_IMG);
-    peopleTex.colorSpace = THREE.SRGBColorSpace;
+    // Горожане: вырезаны с картинки города, стоят плоскими фигурами, поворачиваясь к камере.
     const people = [];
-    const robeMats = [0x3a2a22, 0x2c2a33, 0x4a3426, 0x30362e, 0x553024].map(c => new THREE.MeshLambertMaterial({ color: c }));
-    const skin = new THREE.MeshLambertMaterial({ color: 0xb08870 });
-    const hatMat = new THREE.MeshLambertMaterial({ color: 0x1a1612 });
-    const personMats = PEOPLE_ATLAS.rects.map(([x, y, w, h]) => {
+    const atlasTex = new B.Texture(PEOPLE_IMG, scene, false, true);
+    atlasTex.hasAlpha = true;
+    const PEOPLE_ATLAS = {"size": [632, 384], "rects": [[0, 36, 114, 348], [122, 12, 120, 372], [250, 18, 138, 366], [396, 0, 228, 384]]};
+    const personMats = [mat('person', { diffuseTexture: atlasTex, backFaceCulling: false, emissiveColor: new B.Color3(0.18, 0.15, 0.13) })];
+    function person(x, z, y = PLAT_Y) {
       const [W, H] = PEOPLE_ATLAS.size;
-      const t = peopleTex.clone();
-      t.repeat.set(w / W, h / H);
-      t.offset.set(x / W, 1 - (y + h) / H);
-      return { t, aspect: w / h };
-    });
-    function person(x, z, lit = 1, y = PLAT_Y) {
-      const kind = pick(personMats);
-      const k = 0.5 + 0.5 * lit;
-      const mat = new THREE.SpriteMaterial({ map: kind.t, color: new THREE.Color(k, k * 0.96, k * 0.92), transparent: true, alphaTest: 0.08 });
-      const sp = new THREE.Sprite(mat);
-      sp.center.set(0.5, 0.02);
+      const [ax, ay, aw, ah] = pick(PEOPLE_ATLAS.rects);
       const h = 1.62 + rnd() * 0.22;
-      sp.scale.set(h * kind.aspect * (rnd() < 0.5 ? -1 : 1), h, 1);
-      sp.position.set(x, y, z);
-      scene.add(sp);
-      people.push({ g: sp, h, phase: rnd() * 10 });
+      const flip = rnd() < 0.5;
+      const u0 = ax / W, u1 = (ax + aw) / W, v0 = 1 - (ay + ah) / H, v1 = 1 - ay / H;
+      const p = B.MeshBuilder.CreatePlane('person', { width: h * aw / ah, height: h, frontUVs: flip ? new B.Vector4(u1, v0, u0, v1) : new B.Vector4(u0, v0, u1, v1), backUVs: flip ? new B.Vector4(u0, v0, u1, v1) : new B.Vector4(u1, v0, u0, v1), sideOrientation: B.Mesh.DOUBLESIDE }, scene);
+      p.material = personMats[0];
+      p.billboardMode = B.Mesh.BILLBOARDMODE_Y;
+      p.position.set(x, y + h / 2, z);
+      people.push({ m: p, h, phase: rnd() * 10 });
+      return p;
     }
 
-    // Помост на сваях.
-    const pileGeo = new THREE.CylinderGeometry(0.16, 0.18, 2.6, 6);
+    // Помосты на сваях.
+    const colliders = [];
     const pileSpots = [];
     function platform(cx, cz, sx, sz) {
-      const top = new THREE.Mesh(worldUV(new THREE.BoxGeometry(sx, 0.35, sz), 1 / 4), boardMat);
-      top.position.set(cx, PLAT_Y - 0.17, cz);
-      scene.add(top);
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(sx + 0.1, 0.3, sz + 0.1), darkWood);
-      beam.position.set(cx, PLAT_Y - 0.45, cz);
-      scene.add(beam);
-      for (let x = -sx / 2; x <= sx / 2 + 0.01; x += 2.4) { pileSpots.push([cx + x, cz - sz / 2]); pileSpots.push([cx + x, cz + sz / 2]); }
-      for (let z = -sz / 2 + 2.4; z < sz / 2 - 0.01; z += 2.4) { pileSpots.push([cx - sx / 2, cz + z]); pileSpots.push([cx + sx / 2, cz + z]); }
+      box(sx, 0.35, sz, boardMat, 1 / 4).position.set(cx, PLAT_Y - 0.17, cz);
+      box(sx + 0.1, 0.3, sz + 0.1, darkWood, 0).position.set(cx, PLAT_Y - 0.45, cz);
+      for (let x = -sx / 2; x <= sx / 2 + 0.01; x += 2.4) { pileSpots.push([cx + x, cz - sz / 2], [cx + x, cz + sz / 2]); }
+      for (let z = -sz / 2 + 2.4; z < sz / 2 - 0.01; z += 2.4) { pileSpots.push([cx - sx / 2, cz + z], [cx + sx / 2, cz + z]); }
       colliders.push({ x0: cx - sx / 2, x1: cx + sx / 2, z0: cz - sz / 2, z1: cz + sz / 2 });
     }
 
     /* ---------- лодки ---------- */
 
-    const hullMat = new THREE.MeshLambertMaterial({ map: boardTex, color: 0x8a6a50, side: THREE.DoubleSide });
-    function hullGeometry(L = 4.2, W = 1.3, H = 0.62) {
-      const N = 18, M = 10, pos = [], idx = [];
+    const hullMat = mat('hull', { diffuseTexture: boardMat.diffuseTexture, bumpTexture: boardMat.bumpTexture, diffuseColor: new B.Color3(0.85, 0.7, 0.58), backFaceCulling: false });
+    const robeMats = [[0.23, 0.16, 0.13], [0.17, 0.16, 0.2], [0.29, 0.2, 0.15], [0.19, 0.21, 0.18]].map((c, i) => mat('robe' + i, { diffuseColor: new B.Color3(...c) }));
+    const skin = mat('skin', { diffuseColor: new B.Color3(0.69, 0.53, 0.44) });
+    const hatMat = mat('hat', { diffuseColor: new B.Color3(0.1, 0.09, 0.07) });
+
+    function hullMesh(L = 4.2, W = 1.3, Hh = 0.62) {
+      const N = 18, M = 10, pos = [], idx = [], uv = [];
       for (let i = 0; i <= N; i++) {
-        const t = i / N;
-        const z = (t - 0.5) * L;
+        const t = i / N, z = (t - 0.5) * L;
         const taper = Math.pow(Math.sin(Math.PI * t), 0.65);
-        const half = W / 2 * taper;
-        const depth = H * (0.45 + 0.55 * taper);
+        const half = W / 2 * taper, depth = Hh * (0.45 + 0.55 * taper);
         const sheer = 0.12 + 0.42 * Math.pow(Math.abs(t - 0.5) * 2, 2.2);
         for (let j = 0; j <= M; j++) {
           const a = j / M * Math.PI;
           pos.push(-Math.cos(a) * half, sheer - Math.sin(a) * depth, z);
+          uv.push(j / M * 1.2, t * 2.5);
         }
       }
       for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) {
         const a = i * (M + 1) + j, b = a + 1, c = a + M + 1, d = c + 1;
-        idx.push(a, c, b, b, c, d);
+        idx.push(a, b, c, b, d, c);
       }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      g.setIndex(idx);
-      g.computeVertexNormals();
-      const uv = [];
-      for (let i = 0; i <= N; i++) for (let j = 0; j <= M; j++) uv.push(j / M * 1.2, i / N * 2.5);
-      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-      return g;
+      const vd = new B.VertexData();
+      vd.positions = pos; vd.indices = idx; vd.uvs = uv;
+      const nrm = [];
+      B.VertexData.ComputeNormals(pos, idx, nrm);
+      vd.normals = nrm;
+      const m = new B.Mesh('hull', scene);
+      vd.applyToMesh(m);
+      m.material = hullMat;
+      return m;
     }
-    const HULL = hullGeometry();
 
-    // Лодка с гребцом: вёсла ходят по кругу — заносим, опускаем, тянем, поднимаем.
-    function makeBoat(withRower, lanternLight) {
-      const g = new THREE.Group();
-      const hull = new THREE.Mesh(HULL, hullMat);
-      g.add(hull);
-      for (const z of [-0.9, 0.5]) {
-        const seat = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.06, 0.32), darkWood);
-        seat.position.set(0, 0.02, z);
-        g.add(seat);
-      }
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 4, 24), darkWood);
-      rim.scale.set(0.63, 2.05, 1);
-      rim.rotation.x = Math.PI / 2;
-      rim.position.y = 0.16;
-      g.add(rim);
+    const moving = [];   // всё, что отражается и не сливается: лодки, люди
+    // Лодка с гребцом. Нос — по +z. Вёсла: в гребке лопасть в воде и идёт к корме, на заносе — по воздуху.
+    function makeBoat(withRower, light) {
+      const root = new B.TransformNode('boat', scene);
+      const parts = [];
+      const add = (m, parent = root) => { m.parent = parent; parts.push(m); return m; };
+      add(hullMesh());
+      for (const z of [0.9, -0.5]) { const s = B.MeshBuilder.CreateBox('seat', { width: 1.15, height: 0.06, depth: 0.32 }, scene); s.material = darkWood; add(s).position.set(0, 0.02, z); }
       const oars = [];
       for (const side of [-1, 1]) {
-        const pivot = new THREE.Group();
-        pivot.position.set(side * 0.62, 0.2, 0.15);
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.0, 5), darkWood);
+        const pivot = new B.TransformNode('oar', scene);
+        pivot.parent = root;
+        pivot.position.set(side * 0.62, 0.2, -0.15);
+        const shaft = B.MeshBuilder.CreateCylinder('shaft', { diameter: 0.06, height: 3.0, tessellation: 5 }, scene);
+        shaft.material = darkWood;
+        add(shaft, pivot);
         shaft.rotation.z = Math.PI / 2;
         shaft.position.x = side * 0.9;
-        pivot.add(shaft);
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.02, 0.2), darkWood);
-        blade.position.x = side * 2.25;
-        pivot.add(blade);
-        g.add(pivot);
+        const blade = B.MeshBuilder.CreateBox('blade', { width: 0.55, height: 0.02, depth: 0.2 }, scene);
+        blade.material = darkWood;
+        add(blade, pivot).position.x = side * 2.25;
         oars.push({ pivot, side });
       }
       let rower = null;
       if (withRower) {
-        rower = new THREE.Group();
-        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.28, 0.75, 8), pick(robeMats));
-        body.position.y = 0.42;
-        rower.add(body);
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), skin);
-        head.position.y = 0.92;
-        rower.add(head);
-        const hat = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.26, 8), hatMat);
-        hat.position.y = 1.1;
-        rower.add(hat);
+        rower = new B.TransformNode('rower', scene);
+        rower.parent = root;
+        rower.position.set(0, 0.05, -0.5);
+        const robe = pick(robeMats);
+        const body = B.MeshBuilder.CreateCylinder('body', { diameterTop: 0.4, diameterBottom: 0.56, height: 0.75, tessellation: 10 }, scene);
+        body.material = robe;
+        add(body, rower).position.y = 0.42;
+        const head = B.MeshBuilder.CreateSphere('head', { diameter: 0.28, segments: 8 }, scene);
+        head.material = skin;
+        add(head, rower).position.y = 0.92;
+        const hat = B.MeshBuilder.CreateCylinder('hat', { diameterTop: 0, diameterBottom: 0.34, height: 0.26, tessellation: 8 }, scene);
+        hat.material = hatMat;
+        add(hat, rower).position.y = 1.1;
         for (const side of [-1, 1]) {
-          const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.62, 6), body.material);
-          arm.position.set(side * 0.24, 0.62, -0.22);
-          arm.rotation.x = Math.PI / 2.6;
-          rower.add(arm);
+          const arm = B.MeshBuilder.CreateCylinder('arm', { diameter: 0.1, height: 0.62, tessellation: 6 }, scene);
+          arm.material = robe;
+          add(arm, rower).position.set(side * 0.24, 0.62, 0.22);
+          arm.rotation.x = -Math.PI / 2.6;
         }
-        rower.position.set(0, 0.05, 0.5);
-        g.add(rower);
       }
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.3, 5), darkWood);
-      post.position.set(0, 0.75, -1.85);
-      g.add(post);
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.16), lanternBox);
-      lamp.position.set(0, 1.42, -1.85);
-      g.add(lamp);
-      const gl = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffb36b, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
-      gl.scale.setScalar(1.8);
-      gl.position.copy(lamp.position);
-      g.add(gl);
-      if (lanternLight) {
-        const l = new THREE.PointLight(0xffa860, 9, 14, 2);
-        l.position.set(0, 1.5, -1.6);
-        g.add(l);
+      const post = B.MeshBuilder.CreateCylinder('post', { diameter: 0.05, height: 1.3, tessellation: 5 }, scene);
+      post.material = darkWood;
+      add(post).position.set(0, 0.75, 1.85);
+      const lamp = B.MeshBuilder.CreateBox('lamp', { width: 0.16, height: 0.22, depth: 0.16 }, scene);
+      lamp.material = lampMat;
+      add(lamp).position.set(0, 1.42, 1.85);
+      if (light) {
+        const l = new B.PointLight('boatLamp', V3(0, 1.5, 1.6), scene);
+        l.parent = root;
+        l.diffuse = new B.Color3(1, 0.65, 0.35);
+        l.specular = new B.Color3(0.12, 0.08, 0.04);
+        l.range = 14;
+        l.intensity = 1.6;
       }
-      scene.add(g);
-      return { g, oars, rower, phase: rnd() * 6 };
+      moving.push(...parts);
+      return { root, oars, rower, phase: rnd() * 6 };
     }
-
-    // Положение вёсел по фазе гребка: 0..π — гребок в воде, π..2π — занос по воздуху.
     function poseOars(b, phase, amount) {
       const s = Math.sin(phase), c = Math.cos(phase);
-      // Внешний конец весла: в гребке опущен в воду, на заносе поднят.
       const k = Math.min(1, Math.max(0, (s + 0.2) / 0.4));
       const tilt = (0.08 + (-0.22 - 0.08) * k * k * (3 - 2 * k)) * amount - 0.12 * (1 - amount);
-      for (const o of b.oars) o.pivot.rotation.set(0, o.side * c * 0.55 * amount, o.side * tilt);
-      if (b.rower) b.rower.rotation.x = -c * 0.22 * amount;
+      for (const o of b.oars) o.pivot.rotation.set(0, -o.side * c * 0.55 * amount, o.side * tilt);
+      if (b.rower) b.rower.rotation.x = c * 0.2 * amount;
     }
 
-    /* ---------- планировка города ---------- */
+    /* ---------- планировка ---------- */
 
-    // Кварталы-помосты по обе стороны главного канала (x ∈ [-7, 7]) и поперечных каналов.
     const BLOCK = 22;
-    const xs = [-54, -18, 18, 54];
-    const zs = [0, -36, -72, -108];
+    const xs = [-54, -18, 18, 54], zs = [0, -36, -72, -108];
     const towersAt = new Set(['18,-36', '-18,-72', '54,0', '-54,-108', '-18,0']);
-    const bellTowers = [];
-
+    const bells = [];
     for (const cx of xs) for (const cz of zs) {
-      if ((cx === -54 && cz === -36) || (cx === 54 && cz === -72)) continue;   // открытая вода — «площади»
+      if ((cx === -54 && cz === -36) || (cx === 54 && cz === -72)) continue;
       platform(cx, cz, BLOCK, BLOCK);
-      const s = cx > 0 ? -1 : 1;   // сторона, обращённая к главному каналу
-      const front = s > 0 ? Math.PI / 2 : -Math.PI / 2;
-      const key = `${cx},${cz}`;
-      if (towersAt.has(key)) {
-        const t = tower(cx + s * 5.5, cz - 5, 2.4 + rnd() * 0.5, 9 + rnd() * 4);
-        bellTowers.push(t.userData.bellPos);
+      const s = cx > 0 ? -1 : 1;
+      const front = s > 0 ? -Math.PI / 2 : Math.PI / 2;   // фасад (минус z дома) к главному каналу
+      if (towersAt.has(`${cx},${cz}`)) {
+        bells.push(tower(cx + s * 5.5, cz - 5, 2.4 + rnd() * 0.5, 9 + rnd() * 4));
         izba(cx + s * 5, cz + 5.5, front, 6.5, 7.5, rnd() < 0.5 ? 2 : 1);
         izba(cx - s * 5.5, cz + 3, front + Math.PI / 2, 6, 7, 1, 0.4);
       } else {
@@ -1119,399 +1136,262 @@ function boot(imgGate, imgCity) {
         izba(cx + s * 5.2, cz + 5.4, front, 6 + rnd(), 7 + rnd() * 1.5, rnd() < 0.4 ? 2 : 1);
         if (rnd() < 0.7) izba(cx - s * 5.6, cz + (rnd() - 0.5) * 6, front + Math.PI, 5.5, 6.5, 1, 0.35);
       }
-      // Фонари по углам у воды.
       for (const [dx, dz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
         if (rnd() < 0.25) continue;
         lantern(cx + dx * (BLOCK / 2 - 0.6), PLAT_Y, cz + dz * (BLOCK / 2 - 0.6));
       }
-      // Костёр с людьми у канала.
       if (rnd() < 0.5) {
         const fx = cx + s * (BLOCK / 2 - 2.2), fz = cz + (rnd() - 0.5) * 4;
         bonfire(fx, fz);
         const n = 1 + Math.floor(rnd() * 3);
-        for (let i = 0; i < n; i++) {
-          const a = rnd() * Math.PI * 2;
-          person(fx + Math.cos(a) * 1.6, fz + Math.sin(a) * 1.6, 1);
-        }
+        for (let i = 0; i < n; i++) { const a = rnd() * Math.PI * 2; person(fx + Math.cos(a) * 1.6, fz + Math.sin(a) * 1.6); }
       }
-      // Кто-то стоит у воды под фонарём.
-      if (rnd() < 0.55) person(cx + s * (BLOCK / 2 - 1.2), cz + (rnd() - 0.5) * 16, 0.55);
+      if (rnd() < 0.55) person(cx + s * (BLOCK / 2 - 1.2), cz + (rnd() - 0.5) * 16);
     }
 
-    // Крытые мосты через главный канал.
     function bridge(z) {
       const deckY = 3.0;
-      const deck = new THREE.Mesh(worldUV(new THREE.BoxGeometry(16, 0.35, 3.2), 1 / 4), boardMat);
-      deck.position.set(0, deckY, z);
-      scene.add(deck);
+      box(16, 0.35, 3.2, boardMat, 1 / 4).position.set(0, deckY, z);
       for (const sx of [-1, 1]) {
-        for (const dz of [-1.3, 1.3]) {
-          const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, deckY + 2, 8), darkWood);
-          pillar.position.set(sx * 7.6, (deckY - 2) / 2, z + dz);
-          scene.add(pillar);
-        }
-        const stairs = new THREE.Mesh(worldUV(new THREE.BoxGeometry(2.2, 0.3, 3.2), 1 / 4), boardMat);
-        stairs.position.set(sx * 8.8, (deckY + PLAT_Y) / 2, z);
-        stairs.rotation.z = sx * 0.55;
-        scene.add(stairs);
+        for (const dz of [-1.3, 1.3]) keep(B.MeshBuilder.CreateCylinder('pillar', { diameterTop: 0.44, diameterBottom: 0.52, height: deckY + 2, tessellation: 8 }, scene), darkWood).position.set(sx * 7.6, (deckY - 2) / 2, z + dz);
+        const st = box(2.2, 0.3, 3.2, boardMat, 1 / 4);
+        st.position.set(sx * 8.8, (deckY + PLAT_Y) / 2, z);
+        st.rotation.z = -sx * 0.55;
       }
-      const wallG = worldUV(new THREE.BoxGeometry(15, 1.0, 0.18));
       for (const dz of [-1.5, 1.5]) {
-        const wall = new THREE.Mesh(wallG, logMat);
-        wall.position.set(0, deckY + 0.7, z + dz);
-        scene.add(wall);
-        for (let x = -7; x <= 7; x += 1.75) {
-          const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.5, 0.16), darkWood);
-          post.position.set(x, deckY + 1.95, z + dz);
-          scene.add(post);
-        }
+        box(15, 1.0, 0.18, logMat).position.set(0, deckY + 0.7, z + dz);
+        for (let x = -7; x <= 7; x += 1.75) box(0.16, 1.5, 0.16, darkWood, 0).position.set(x, deckY + 1.95, z + dz);
       }
-      const roof = new THREE.Mesh(gableRoof(3.2, 15, 1.4, 0.5), roofMat);
-      roof.rotation.y = Math.PI / 2;
-      roof.position.set(0, deckY + 2.7, z);
-      scene.add(roof);
-      for (let i = 0; i < 2; i++) person(-5 + rnd() * 10, z + (rnd() - 0.5) * 1.6, 0.6, deckY + 0.18);
+      const node = new B.TransformNode('bridgeRoof', scene);
+      node.position.set(0, 0, z);
+      node.rotation.y = Math.PI / 2;
+      gableRoof(node, 3.2, 15, 1.4, deckY + 2.7, 0.5);
       for (const sx of [-4, 4]) {
-        const box = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, 0.2), lanternBox);
-        box.position.set(sx, deckY - 0.4, z);
-        scene.add(box);
-        glow(box.position, 2.2, 0xffb36b, 0.7);
-        lightSource(box.position, 1, 'lamp');
+        const p = V3(sx, deckY - 0.4, z);
+        box(0.2, 0.3, 0.2, lampMat, 0).position.copyFrom(p);
+        lightSource(p, 'lamp');
       }
+      for (let i = 0; i < 2; i++) person(-5 + rnd() * 10, z + (rnd() - 0.5) * 1.6, deckY + 0.18);
     }
     bridge(-30);
     bridge(-80);
 
-    // Терем в конце главного канала: высокий сруб с бочкой-кровлей, две башни, костры и люди.
-    (function terem() {
+    // Терем в конце главного канала.
+    (() => {
       const cz = -150;
       platform(0, cz, 44, 26);
-      izba(0, cz - 1, 0, 13, 10, 3, 0.8);
-      const t1 = tower(-12, cz - 2, 2.8, 14, 0.8);
-      const t2 = tower(12, cz - 2, 2.8, 14, 0.8);
-      bellTowers.push(t1.userData.bellPos, t2.userData.bellPos);
-      izba(-17, cz + 6, Math.PI / 2, 6, 7, 1);
-      izba(17, cz + 6, -Math.PI / 2, 6, 7, 1);
+      izba(0, cz - 1, Math.PI, 13, 10, 3, 0.85);
+      bells.push(tower(-12, cz - 2, 2.8, 14, 0.8), tower(12, cz - 2, 2.8, 14, 0.8));
+      izba(-17, cz + 6, -Math.PI / 2, 6, 7, 1);
+      izba(17, cz + 6, Math.PI / 2, 6, 7, 1);
       bonfire(-6, cz + 10);
       bonfire(6, cz + 10);
-      for (let i = 0; i < 9; i++) person(-10 + rnd() * 20, cz + 8 + rnd() * 3.8, 1);
+      for (let i = 0; i < 9; i++) person(-10 + rnd() * 20, cz + 8 + rnd() * 3.8);
       for (const x of [-20, -8, 8, 20]) lantern(x, PLAT_Y, cz + 12.4, 2.8);
     })();
 
-    // Ворота, через которые вы вошли: две срубные башни и арка над каналом.
-    (function gateArch() {
+    // Ворота, через которые вы вошли.
+    (() => {
       const z = 46;
       platform(-14, z, 14, 8);
       platform(14, z, 14, 8);
-      const tl = tower(-9.5, z, 2.6, 10);
-      const tr = tower(9.5, z, 2.6, 10);
-      bellTowers.push(tl.userData.bellPos, tr.userData.bellPos);
-      const beam = new THREE.Mesh(worldUV(new THREE.BoxGeometry(16, 1.6, 3)), logMat);
-      beam.position.set(0, PLAT_Y + 7.5, z);
-      scene.add(beam);
-      const roof = new THREE.Mesh(gableRoof(3, 16, 1.6, 0.5), roofMat);
-      roof.rotation.y = Math.PI / 2;
-      roof.position.set(0, PLAT_Y + 8.3, z);
-      scene.add(roof);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 0.9), new THREE.MeshBasicMaterial({ map: canvasTexture(256, (g, S) => {
-        g.fillStyle = '#20150e'; g.fillRect(0, 0, S, S);
-        // Доска вытянута 5:1, поэтому буквы рисуются растянутыми по высоте.
-        g.fillStyle = '#e9c27a'; g.font = 'bold 46px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-        g.save(); g.scale(1, 5); g.fillText('КИТЕЖЪ', S / 2, S / 10); g.restore();
-      }), color: 0xbbaa88 }));
+      bells.push(tower(-9.5, z, 2.6, 10), tower(9.5, z, 2.6, 10));
+      box(16, 1.6, 3, logMat).position.set(0, PLAT_Y + 7.5, z);
+      const node = new B.TransformNode('gateRoof', scene);
+      node.position.set(0, 0, z);
+      node.rotation.y = Math.PI / 2;
+      gableRoof(node, 3, 16, 1.6, PLAT_Y + 8.3, 0.5);
+      const signT = new B.DynamicTexture('sign', { width: 512, height: 100 }, scene, true);
+      const sg = signT.getContext();
+      sg.fillStyle = '#20150e'; sg.fillRect(0, 0, 512, 100);
+      sg.fillStyle = '#e9c27a'; sg.font = 'bold 64px Georgia, serif'; sg.textAlign = 'center'; sg.textBaseline = 'middle';
+      sg.fillText('КИТЕЖЪ', 256, 54);
+      signT.update();
+      const sign = B.MeshBuilder.CreatePlane('sign', { width: 4.5, height: 0.9 }, scene);
+      sign.material = mat('signM', { emissiveTexture: signT, disableLighting: true, emissiveColor: new B.Color3(0.75, 0.7, 0.6) });
       sign.position.set(0, PLAT_Y + 7.4, z - 1.52);
-      sign.rotation.y = Math.PI;
-      scene.add(sign);
+      moving.push(sign);
       for (const sx of [-1, 1]) {
-        const leaf = new THREE.Mesh(worldUV(new THREE.BoxGeometry(3.4, 6, 0.25)), doorMat);
-        leaf.position.set(sx * 6.4, PLAT_Y + 3, z - 1.5 - 1.6);
-        leaf.rotation.y = sx * 1.2;
-        scene.add(leaf);
+        const leaf = box(3.4, 6, 0.25, mat('gateDoor', { diffuseTexture: boardMat.diffuseTexture, diffuseColor: new B.Color3(0.6, 0.48, 0.38) }), 1 / 2);
+        leaf.position.set(sx * 6.4, PLAT_Y + 3, z - 3.1);
+        leaf.rotation.y = -sx * 1.2;
       }
       lantern(-6.5, PLAT_Y, z - 3.6, 2.6);
       lantern(5.8, PLAT_Y, z - 3.6, 2.6);
     })();
 
-    // Сваи всех помостов одним пакетом.
-    const piles = new THREE.InstancedMesh(pileGeo, pileMat, pileSpots.length);
-    const pm = new THREE.Matrix4();
-    pileSpots.forEach(([x, z], i) => { pm.makeTranslation(x, PLAT_Y - 1.5, z); piles.setMatrixAt(i, pm); });
-    scene.add(piles);
-
-    // Причаленные лодки у помостов.
-    const moored = [];
-    for (let i = 0; i < 9; i++) {
-      const cx = pick(xs), cz = pick(zs);
-      const s = cx > 0 ? -1 : 1;
-      const b = makeBoat(false, false);
-      b.g.position.set(cx + s * (BLOCK / 2 + 1.1), 0, cz + (rnd() - 0.5) * 14);
-      b.g.rotation.y = (rnd() - 0.5) * 0.3;
-      moored.push(b);
+    // Сливаем статику по материалам.
+    const statics = [];
+    for (const [m, list] of byMat) {
+      const merged = B.Mesh.MergeMeshes(list, true, true, undefined, false, false);
+      if (merged) { merged.material = m; merged.freezeWorldMatrix(); statics.push(merged); }
     }
 
-    // Лес по берегам озера и тёмные холмы — в тумане они складываются в слои.
-    (function shore() {
-      const ground = new THREE.Mesh(new THREE.RingGeometry(LAKE_R + 14, 420, 48, 1), new THREE.MeshLambertMaterial({ color: 0x0f1411 }));
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.set(LAKE_C.x, 0.25, LAKE_C.y);
-      scene.add(ground);
-      // Ель из трёх ярусов, собранных в одну геометрию.
-      const tiers = [[1, 0.5, 0.0], [0.78, 0.42, 0.3], [0.55, 0.38, 0.55]].map(([r, h, y]) =>
-        new THREE.ConeGeometry(r, h, 7).translate(0, y + h / 2, 0).toNonIndexed());
-      const treeGeo = new THREE.BufferGeometry();
-      for (const name of ['position', 'normal']) {
-        const arrs = tiers.map(t => t.attributes[name].array);
-        const out = new Float32Array(arrs.reduce((n, a) => n + a.length, 0));
-        let o = 0;
-        for (const a of arrs) { out.set(a, o); o += a.length; }
-        treeGeo.setAttribute(name, new THREE.BufferAttribute(out, 3));
-      }
-      const trees = new THREE.InstancedMesh(treeGeo, new THREE.MeshLambertMaterial({ color: 0x0d1813 }), 900);
-      const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
-      for (let i = 0; i < 900; i++) {
+    // Сваи — тонкими экземплярами одной сваи.
+    const pile = B.MeshBuilder.CreateCylinder('pile', { diameterTop: 0.32, diameterBottom: 0.36, height: 2.6, tessellation: 6 }, scene);
+    pile.material = darkWood;
+    const pm = new Float32Array(pileSpots.length * 16);
+    pileSpots.forEach(([x, z], i) => B.Matrix.Translation(x, PLAT_Y - 1.5, z).copyToArray(pm, i * 16));
+    pile.thinInstanceSetBuffer('matrix', pm, 16);
+    statics.push(pile);
+
+    // Лес: ярусные ели вокруг озера, тёмные холмы на дальнем берегу.
+    (() => {
+      const shore = B.MeshBuilder.CreateDisc('shore', { radius: 420, tessellation: 48 }, scene);
+      shore.rotation.x = Math.PI / 2;
+      shore.position.set(LAKE.x, 0.22, LAKE.z);
+      shore.material = mat('ground', { diffuseColor: new B.Color3(0.05, 0.07, 0.06) });
+      const tiers = [[1, 0.5, 0], [0.78, 0.42, 0.3], [0.55, 0.38, 0.55]].map(([r, h, y]) => {
+        const c = B.MeshBuilder.CreateCylinder('tier', { diameterTop: 0, diameterBottom: r * 2, height: h, tessellation: 7 }, scene);
+        c.position.y = y + h / 2;
+        return c;
+      });
+      const tree = B.Mesh.MergeMeshes(tiers, true);
+      tree.material = mat('pine', { diffuseColor: new B.Color3(0.04, 0.08, 0.06) });
+      const n = 800, buf = new Float32Array(n * 16);
+      for (let i = 0; i < n; i++) {
         const a = rnd() * Math.PI * 2;
-        const r = LAKE_R + 18 + Math.pow(rnd(), 0.7) * 110;
+        const r = LAKE.r + 18 + Math.pow(rnd(), 0.7) * 110;
         const h = 10 + rnd() * 16;
-        p.set(LAKE_C.x + Math.cos(a) * r, 0.2, LAKE_C.y + Math.sin(a) * r);
-        sc.set(h * 0.28, h, h * 0.28);
-        m.compose(p, q, sc);
-        trees.setMatrixAt(i, m);
+        B.Matrix.Compose(V3(h * 0.28, h, h * 0.28), B.Quaternion.Identity(), V3(LAKE.x + Math.cos(a) * r, 0.2, LAKE.z + Math.sin(a) * r)).copyToArray(buf, i * 16);
       }
-      scene.add(trees);
+      tree.thinInstanceSetBuffer('matrix', buf, 16);
+      statics.push(tree);
     })();
 
-    /* ---------- небо и вода ---------- */
+    /* ---------- небо ---------- */
 
-    const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 32, 16), new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      uniforms: {
-        uTime: clock,
-        uMoonDir: { value: MOON_DIR },
-        uHorizon: { value: FOG_COLOR },
-        uZenith: { value: new THREE.Color(0x03070f) }
-      },
-      vertexShader: `
-        varying vec3 vDir;
-        void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
-      `,
-      fragmentShader: `
-        uniform float uTime;
-        uniform vec3 uMoonDir, uHorizon, uZenith;
-        varying vec3 vDir;
-        float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
-        float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-        float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
-        float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.07; a *= 0.5; } return s; }
-        void main() {
-          vec3 d = normalize(vDir);
-          float h = d.y;
-          vec3 col = mix(uHorizon, uZenith, smoothstep(-0.02, 0.55, h));
-          vec3 sd = d * 260.0;
-          vec3 cell = floor(sd);
-          float r = hash3(cell);
-          float star = step(0.986, r) * smoothstep(0.38, 0.0, length(fract(sd) - 0.5)) * smoothstep(0.04, 0.3, h);
-          col += vec3(0.8, 0.86, 1.0) * star * (0.5 + 0.5 * sin(uTime * 1.7 + r * 90.0)) * 1.4;
-          float md = dot(d, uMoonDir);
-          col += vec3(0.75, 0.82, 0.95) * (pow(max(md, 0.0), 260.0) * 0.5 + pow(max(md, 0.0), 18.0) * 0.1);
-          vec2 cp = d.xz / max(h, 0.06) * 1.3 + vec2(uTime * 0.006, uTime * 0.002);
-          float cl = smoothstep(0.42, 0.82, fbm(cp)) * smoothstep(0.02, 0.22, h);
-          vec3 cloud = mix(vec3(0.045, 0.058, 0.075), vec3(0.2, 0.24, 0.3), pow(max(md, 0.0), 8.0));
-          col = mix(col, cloud, cl * 0.88);
-          col += vec3(0.95, 0.97, 1.0) * smoothstep(0.99955, 0.99975, md) * 2.4 * (1.0 - cl * 0.7);
-          col = mix(uHorizon, col, smoothstep(-0.04, 0.05, h));
-          gl_FragColor = vec4(col, 1.0);
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }
-      `
-    }));
-    sky.renderOrder = -1;
-    sky.frustumCulled = false;
-    scene.add(sky);
+    B.Effect.ShadersStore.kitezhSkyVertexShader = `
+      precision highp float;
+      attribute vec3 position;
+      uniform mat4 worldViewProjection;
+      varying vec3 vDir;
+      void main() { vDir = position; gl_Position = worldViewProjection * vec4(position, 1.0); }
+    `;
+    B.Effect.ShadersStore.kitezhSkyFragmentShader = `
+      precision highp float;
+      uniform float time;
+      uniform vec3 moonDir, horizon, zenith;
+      varying vec3 vDir;
+      float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
+      float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.07; a *= 0.5; } return s; }
+      void main() {
+        vec3 d = normalize(vDir);
+        float h = d.y;
+        vec3 col = mix(horizon, zenith, smoothstep(-0.02, 0.55, h));
+        vec3 sd = d * 260.0;
+        float r = hash3(floor(sd));
+        float star = step(0.986, r) * smoothstep(0.38, 0.0, length(fract(sd) - 0.5)) * smoothstep(0.04, 0.3, h);
+        col += vec3(0.8, 0.86, 1.0) * star * (0.5 + 0.5 * sin(time * 1.7 + r * 90.0)) * 1.4;
+        float md = dot(d, moonDir);
+        col += vec3(0.75, 0.82, 0.95) * (pow(max(md, 0.0), 260.0) * 0.5 + pow(max(md, 0.0), 18.0) * 0.12);
+        vec2 cp = d.xz / max(h, 0.06) * 1.3 + vec2(time * 0.006, time * 0.002);
+        float cl = smoothstep(0.42, 0.82, fbm(cp)) * smoothstep(0.02, 0.22, h);
+        vec3 cloud = mix(vec3(0.045, 0.058, 0.075), vec3(0.22, 0.26, 0.32), pow(max(md, 0.0), 8.0));
+        col = mix(col, cloud, cl * 0.88);
+        col += vec3(0.95, 0.97, 1.0) * smoothstep(0.99955, 0.99975, md) * 2.2 * (1.0 - cl * 0.7);
+        col = mix(horizon, col, smoothstep(-0.04, 0.05, h));
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `;
+    const skyMat = new B.ShaderMaterial('sky', scene, { vertex: 'kitezhSky', fragment: 'kitezhSky' },
+      { attributes: ['position'], uniforms: ['worldViewProjection', 'time', 'moonDir', 'horizon', 'zenith'] });
+    skyMat.backFaceCulling = false;
+    skyMat.disableDepthWrite = true;
+    skyMat.setVector3('moonDir', MOON_DIR);
+    skyMat.setColor3('horizon', FOG);
+    skyMat.setColor3('zenith', new B.Color3(0.012, 0.027, 0.06));
+    const sky = B.MeshBuilder.CreateSphere('sky', { diameter: 1600, segments: 24, sideOrientation: B.Mesh.BACKSIDE }, scene);
+    sky.material = skyMat;
+    sky.infiniteDistance = true;
+    sky.renderingGroupId = 0;
+    sky.applyFog = false;
 
-    // Отражения: сцена рендерится зеркальной камерой в текстуру, вода читает её с рябью.
-    const reflRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
-    const mirrorCam = new THREE.PerspectiveCamera();
-    const texMatrix = new THREE.Matrix4();
-    const waterUni = {
-      uTime: clock,
-      uRefl: { value: reflRT.texture },
-      uTexMat: { value: texMatrix },
-      uCamPos: { value: new THREE.Vector3() },
-      uMoonDir: { value: MOON_DIR },
-      uFogColor: { value: FOG_COLOR },
-      uFogDensity: { value: scene.fog.density },
-      uBoat: { value: new THREE.Vector4() }
-    };
-    const water = new THREE.Mesh(new THREE.PlaneGeometry(900, 900).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({
-      uniforms: waterUni,
-      vertexShader: `
-        uniform mat4 uTexMat;
-        varying vec4 vRefl;
-        varying vec3 vWorld;
-        void main() {
-          vec4 w = modelMatrix * vec4(position, 1.0);
-          vWorld = w.xyz;
-          vRefl = uTexMat * w;
-          gl_Position = projectionMatrix * viewMatrix * w;
-        }
-      `,
-      fragmentShader: `
-        uniform sampler2D uRefl;
-        uniform float uTime, uFogDensity;
-        uniform vec3 uCamPos, uMoonDir, uFogColor;
-        uniform vec4 uBoat;
-        varying vec4 vRefl;
-        varying vec3 vWorld;
-        float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-        float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y); }
-        float height(vec2 q) {
-          float t = uTime;
-          float h = noise(q * 0.32 + vec2(t * 0.05, t * 0.03)) * 0.55
-                  + noise(q * 1.05 - vec2(t * 0.09, -t * 0.05)) * 0.3
-                  + noise(q * 3.1 + vec2(t * 0.17, t * 0.12)) * 0.12;
-          // Расходящиеся круги от вёсел лодки игрока.
-          float d = distance(q, uBoat.xy);
-          h += sin(d * 5.0 - t * 6.0) * 0.08 * exp(-d * 0.35) * uBoat.z;
-          return h;
-        }
-        void main() {
-          vec2 p = vWorld.xz;
-          float e = 0.06;
-          float h0 = height(p);
-          vec3 n = normalize(vec3(-(height(p + vec2(e, 0.0)) - h0) / e * 0.2, 1.0, -(height(p + vec2(0.0, e)) - h0) / e * 0.2));
-          vec3 V = normalize(uCamPos - vWorld);
-          float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, V), 0.0), 5.0);
-          vec2 uv = vRefl.xy / vRefl.w + n.xz * 0.035;
-          vec3 refl = texture2D(uRefl, uv).rgb * 0.72;
-          vec3 deep = vec3(0.006, 0.016, 0.02);
-          vec3 col = mix(deep, refl, clamp(0.55 + fres * 0.6, 0.0, 1.0));
-          vec3 R = reflect(-V, n);
-          col += vec3(0.75, 0.85, 1.0) * pow(max(dot(R, uMoonDir), 0.0), 600.0) * 0.9;
-          float dist = length(uCamPos - vWorld);
-          float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
-          gl_FragColor = vec4(mix(col, uFogColor, fog), 1.0);
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }
-      `
-    }));
-    scene.add(water);
+    /* ---------- вода ---------- */
 
-    // Круги на воде: от вёсел, от носа лодки и от брошенных огоньков.
-    const MAX_RIP = 140;
-    const ripAlpha = new Float32Array(MAX_RIP);
-    const ripGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    ripGeo.setAttribute('aA', new THREE.InstancedBufferAttribute(ripAlpha, 1));
-    const ripMesh = new THREE.InstancedMesh(ripGeo, new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      vertexShader: `
-        attribute float aA;
-        varying vec2 vUv;
-        varying float vA;
-        void main() { vUv = uv; vA = aA; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        varying float vA;
-        void main() {
-          float d = length(vUv - 0.5) * 2.0;
-          float ring = smoothstep(0.6, 0.88, d) * (1.0 - smoothstep(0.88, 1.0, d));
-          gl_FragColor = vec4(vec3(0.42, 0.5, 0.56) * ring * vA * 0.55, 1.0);
-        }
-      `
-    }), MAX_RIP);
-    ripMesh.frustumCulled = false;
-    ripMesh.count = 0;
-    scene.add(ripMesh);
-    const ripples = [];
+    const water = new B.WaterMaterial('water', scene, lite ? new B.Vector2(512, 512) : new B.Vector2(1024, 1024));
+    water.bumpTexture = normalMap('waves', waveC, 3);
+    water.bumpTexture.uScale = water.bumpTexture.vScale = 6;
+    water.windForce = -1.6;
+    water.windDirection = new B.Vector2(1, 0.6);
+    water.waveHeight = 0.0;
+    water.waveLength = 0.12;
+    water.bumpHeight = 0.12;
+    water.waterColor = new B.Color3(0.015, 0.035, 0.05);
+    water.colorBlendFactor = 0.18;
+    water.waterColor2 = new B.Color3(0.02, 0.04, 0.05);
+    water.colorBlendFactor2 = 0.2;
+    water.specularColor = new B.Color3(0.6, 0.65, 0.75);
+    water.specularPower = 220;
+    water.maxSimultaneousLights = MAXL;
+    // Озеро — круг воды чуть выше берегового диска: снаружи земля под лесом.
+    const lake = B.MeshBuilder.CreateDisc('lake', { radius: LAKE.r + 16, tessellation: 96 }, scene);
+    lake.rotation.x = Math.PI / 2;
+    lake.position.set(LAKE.x, 0.26, LAKE.z);
+    lake.material = water;
+    // Отражаются небо, постройки, лес, лодки и люди.
+    water.addToRenderList(sky);
+    for (const m of statics) water.addToRenderList(m);
+
+    // Круги на воде.
+    const ringT = tex('ring', ringC, false);
+    ringT.hasAlpha = true;
+    const ringMat = mat('ringM', { emissiveTexture: ringT, opacityTexture: ringT, disableLighting: true, emissiveColor: new B.Color3(0.45, 0.52, 0.58), alphaMode: B.Engine.ALPHA_ADD });
+    const RIPS = 60;
+    const ripplePool = Array.from({ length: RIPS }, () => {
+      const m = B.MeshBuilder.CreateGround('rip', { width: 1, height: 1 }, scene);
+      m.material = ringMat;
+      m.isVisible = false;
+      m.isPickable = false;
+      return { m, born: -99, life: 1, size: 1, vx: 0, vz: 0, strength: 0 };
+    });
+    let ripI = 0;
     function ripple(x, z, size = 2.5, life = 2.2, vx = 0, vz = 0, strength = 0.6) {
-      if (ripples.length >= MAX_RIP) ripples.shift();
-      ripples.push({ x, z, size, life, vx, vz, strength, born: clock.value });
+      const r = ripplePool[ripI];
+      ripI = (ripI + 1) % RIPS;
+      Object.assign(r, { born: clock.value, life, size, vx, vz, strength });
+      r.m.position.set(x, 0.3, z);
+      r.m.isVisible = true;
     }
-    const rm = new THREE.Matrix4(), rq = new THREE.Quaternion(), rs = new THREE.Vector3(), rp = new THREE.Vector3();
     function updateRipples(dt) {
       const now = clock.value;
-      for (let i = ripples.length - 1; i >= 0; i--) if (now - ripples[i].born > ripples[i].life) ripples.splice(i, 1);
-      ripples.forEach((r, i) => {
+      for (const r of ripplePool) {
+        if (!r.m.isVisible) continue;
         const t = (now - r.born) / r.life;
-        r.x += r.vx * dt;
-        r.z += r.vz * dt;
+        if (t >= 1) { r.m.isVisible = false; continue; }
+        r.m.position.x += r.vx * dt;
+        r.m.position.z += r.vz * dt;
         const s = 0.3 + r.size * Math.sqrt(t);
-        rp.set(r.x, 0.03, r.z);
-        rs.set(s, 1, s);
-        rm.compose(rp, rq, rs);
-        ripMesh.setMatrixAt(i, rm);
-        ripAlpha[i] = r.strength * (1 - t) * Math.min(1, t * 8);
-      });
-      ripMesh.count = ripples.length;
-      ripMesh.instanceMatrix.needsUpdate = true;
-      ripGeo.attributes.aA.needsUpdate = true;
+        r.m.scaling.set(s, 1, s);
+        r.m.visibility = r.strength * (1 - t) * Math.min(1, t * 8) * 0.6;
+      }
     }
-
-    // Искры костров и ночная пыль у фонарей.
-    const EMB = 260;
-    const embSeed = new Float32Array(EMB * 4);
-    for (let i = 0; i < EMB; i++) embSeed.set([rnd(), rnd(), Math.floor(rnd() * Math.max(1, fires.length)), rnd()], i * 4);
-    const embGeo = new THREE.BufferGeometry();
-    embGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(EMB * 3), 3));
-    embGeo.setAttribute('aSeed', new THREE.BufferAttribute(embSeed, 4));
-    const firePos = Array.from({ length: 16 }, (_, i) => fires[i] ? fires[i].pos : new THREE.Vector3(0, -50, 0));
-    const embMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: clock, uFires: { value: firePos }, uPx: { value: 1 } },
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      vertexShader: `
-        attribute vec4 aSeed;
-        uniform float uTime, uPx;
-        uniform vec3 uFires[16];
-        varying float vA;
-        void main() {
-          int k = int(aSeed.z);
-          vec3 f = uFires[0];
-          for (int i = 0; i < 16; i++) if (i == k) f = uFires[i];
-          float life = fract(uTime * (0.22 + aSeed.w * 0.25) + aSeed.x * 7.0);
-          vec3 p = f + vec3((aSeed.y - 0.5) * 0.6 + sin(uTime * 1.7 + aSeed.x * 30.0) * 0.35 * life, 0.6 + life * 4.0, (aSeed.x - 0.5) * 0.6);
-          vec4 mv = modelViewMatrix * vec4(p, 1.0);
-          vA = (1.0 - life) * smoothstep(0.0, 0.08, life);
-          gl_PointSize = (2.0 + aSeed.y * 3.0) * uPx * (10.0 / -mv.z);
-          gl_Position = projectionMatrix * mv;
-        }
-      `,
-      fragmentShader: `
-        varying float vA;
-        void main() {
-          float d = length(gl_PointCoord - 0.5);
-          gl_FragColor = vec4(vec3(1.0, 0.6, 0.22) * smoothstep(0.5, 0.0, d) * vA, 1.0);
-        }
-      `
-    });
-    const embers = new THREE.Points(embGeo, embMat);
-    embers.frustumCulled = false;
-    scene.add(embers);
 
     /* ---------- лодки: игрок и горожане ---------- */
 
     const player = makeBoat(true, true);
-    const boat = { x: 0, z: 34, yaw: 0, speed: 0, turn: 0, phase: 0, rowing: 0, lastSplash: 0 };
+    const boat = { x: 0, z: 36, yaw: Math.PI, speed: 0, turn: 0, phase: 0, rowing: 0 };
 
-    // Горожане плавают по своим маршрутам по каналам.
     const routes = [
       [[3, 30], [3, -40], [3, -125], [-3, -125], [-3, -40], [-3, 30]],
       [[-36, 18], [-36, -18], [-36, -54], [-36, -90], [-36, -126], [-72, -126], [-72, 18]],
       [[36, -126], [36, -54], [36, 18], [72, 18], [72, -126]],
       [[-72, -18], [72, -18], [72, -54], [-72, -54]]
     ];
-    const townBoats = routes.map(r => {
-      const b = makeBoat(true, false);
-      return { ...b, route: r, seg: 0, u: rnd(), speed: 1.2 + rnd() * 0.5 };
-    });
+    const townBoats = routes.map(r => ({ ...makeBoat(true, false), route: r, seg: 0, u: rnd(), speed: 1.2 + rnd() * 0.5 }));
+    const moored = [];
+    for (let i = 0; i < 8; i++) {
+      const cx = pick(xs), cz = pick(zs), s = cx > 0 ? -1 : 1;
+      const b = makeBoat(false, false);
+      b.root.position.set(cx + s * (BLOCK / 2 + 1.1), 0.25, cz + (rnd() - 0.5) * 14);
+      b.root.rotation.y = (rnd() - 0.5) * 0.3;
+      moored.push(b);
+    }
+    for (const m of moving) water.addToRenderList(m);
+    for (const p of people) water.addToRenderList(p.m);
 
     function updateTownBoats(dt) {
       for (const b of townBoats) {
@@ -1520,17 +1400,14 @@ function boot(imgGate, imgCity) {
         b.u += b.speed * dt / len;
         if (b.u >= 1) { b.u = 0; b.seg = (b.seg + 1) % b.route.length; }
         const x = a[0] + (c[0] - a[0]) * b.u, z = a[1] + (c[1] - a[1]) * b.u;
-        const yaw = Math.atan2(-(c[0] - a[0]), -(c[1] - a[1]));
-        let dy = yaw - b.g.rotation.y;
-        dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-        b.g.rotation.y += dy * (1 - Math.exp(-dt * 2));
-        b.g.position.set(x, Math.sin(clock.value * 1.3 + b.phase) * 0.04, z);
+        const yaw = Math.atan2(c[0] - a[0], c[1] - a[1]);
+        let dy = Math.atan2(Math.sin(yaw - b.root.rotation.y), Math.cos(yaw - b.root.rotation.y));
+        b.root.rotation.y += dy * (1 - Math.exp(-dt * 2));
+        b.root.position.set(x, 0.25 + Math.sin(clock.value * 1.3 + b.phase) * 0.04, z);
+        const before = b.phase;
         b.phase += dt * 2.6;
         poseOars(b, b.phase, 1);
-        if (Math.sin(b.phase) > 0.97 && b.g.userData.splashed !== Math.floor(b.phase / 6.283)) {
-          b.g.userData.splashed = Math.floor(b.phase / 6.283);
-          ripple(x, z, 3, 2.4, 0, 0, 0.45);
-        }
+        if (Math.floor(before / 6.283) !== Math.floor(b.phase / 6.283)) ripple(x, z, 3, 2.4, 0, 0, 0.45);
       }
     }
 
@@ -1538,39 +1415,10 @@ function boot(imgGate, imgCity) {
 
     const keys = new Set();
     const stick = { x: 0, y: 0 };
-    const orbit = { yaw: 0, pitch: 0.28, dist: 9, drag: null };
     let active = false;
-
-    addEventListener('keydown', e => {
-      if (!active) return;
-      keys.add(e.code);
-      if (e.code.startsWith('Arrow')) e.preventDefault();
-    });
+    addEventListener('keydown', e => { if (!active) return; keys.add(e.code); if (e.code.startsWith('Arrow')) e.preventDefault(); });
     addEventListener('keyup', e => keys.delete(e.code));
     addEventListener('blur', () => keys.clear());
-
-    function attach(el) {
-      el.addEventListener('pointerdown', e => {
-        if (!active) return;
-        orbit.drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
-        el.setPointerCapture(e.pointerId);
-      });
-      el.addEventListener('pointermove', e => {
-        if (!active || !orbit.drag || orbit.drag.id !== e.pointerId) return;
-        orbit.yaw -= (e.clientX - orbit.drag.x) * 0.006;
-        orbit.pitch = Math.min(1.1, Math.max(0.05, orbit.pitch + (e.clientY - orbit.drag.y) * 0.004));
-        orbit.drag.x = e.clientX;
-        orbit.drag.y = e.clientY;
-      });
-      const end = e => { if (orbit.drag && orbit.drag.id === e.pointerId) orbit.drag = null; };
-      el.addEventListener('pointerup', end);
-      el.addEventListener('pointercancel', end);
-      el.addEventListener('wheel', e => {
-        if (!active) return;
-        orbit.dist = Math.min(18, Math.max(5, orbit.dist + e.deltaY * 0.01));
-      }, { passive: true });
-    }
-
     function readInput() {
       let fwd = stick.y, turn = stick.x;
       if (keys.has('KeyW') || keys.has('ArrowUp')) fwd += 1;
@@ -1579,6 +1427,23 @@ function boot(imgGate, imgCity) {
       if (keys.has('KeyD') || keys.has('ArrowRight')) turn += 1;
       return { fwd: Math.max(-1, Math.min(1, fwd)), turn: Math.max(-1, Math.min(1, turn)) };
     }
+
+    // Камера: облёт мышью или пальцем; когда её не трогают, она сама заходит за корму.
+    const cam = new B.ArcRotateCamera('cam', 0, 1.33, 9, V3(0, 1.4, 36), scene);
+    cam.attachControl(canvas, true);
+    cam.inputs.removeByType('ArcRotateCameraKeyboardMoveInput');
+    cam.lowerRadiusLimit = 5;
+    cam.upperRadiusLimit = 18;
+    cam.lowerBetaLimit = 0.55;
+    cam.upperBetaLimit = 1.45;
+    cam.wheelPrecision = 40;
+    cam.panningSensibility = 0;
+    cam.minZ = 0.1;
+    cam.maxZ = 2000;
+    cam.fov = 0.9;
+    let lastTouch = -10;
+    canvas.addEventListener('pointerdown', () => { lastTouch = clock.value; });
+    canvas.addEventListener('pointermove', e => { if (e.buttons) lastTouch = clock.value; });
 
     /* ---------- физика лодки ---------- */
 
@@ -1593,11 +1458,11 @@ function boot(imgGate, imgCity) {
           boat.speed *= 0.6;
         }
       }
-      const dx = boat.x - LAKE_C.x, dz = boat.z - LAKE_C.y, d = Math.hypot(dx, dz);
-      if (d > LAKE_R) { boat.x = LAKE_C.x + dx / d * LAKE_R; boat.z = LAKE_C.y + dz / d * LAKE_R; boat.speed *= 0.6; }
+      const dx = boat.x - LAKE.x, dz = boat.z - LAKE.z, d = Math.hypot(dx, dz);
+      if (d > LAKE.r) { boat.x = LAKE.x + dx / d * LAKE.r; boat.z = LAKE.z + dz / d * LAKE.r; boat.speed *= 0.6; }
     }
-
     let wakeTimer = 0;
+    const boatPos = new THREE.Vector3();
     function updateBoat(dt) {
       const { fwd, turn } = readInput();
       const rowing = Math.abs(fwd) > 0.05 || Math.abs(turn) > 0.05;
@@ -1605,62 +1470,40 @@ function boot(imgGate, imgCity) {
       const prev = boat.phase;
       if (rowing) boat.phase += dt * (2.2 + Math.abs(fwd) * 0.8);
       const stroke = Math.max(0, Math.sin(boat.phase));
-      // Тяга только во время гребка, остальное — накат и сопротивление воды.
       boat.speed += fwd * (1.4 + 3.2 * stroke) * dt;
       boat.speed *= Math.exp(-0.45 * dt);
       boat.speed = Math.max(-2, Math.min(5.5, boat.speed));
       boat.turn += (turn * (0.8 + 0.12 * Math.abs(boat.speed)) - boat.turn) * (1 - Math.exp(-dt * 3));
-      boat.yaw -= boat.turn * dt;
-      boat.x += -Math.sin(boat.yaw) * boat.speed * dt;
-      boat.z += -Math.cos(boat.yaw) * boat.speed * dt;
+      boat.yaw += boat.turn * dt;
+      const fx = Math.sin(boat.yaw), fz = Math.cos(boat.yaw);
+      boat.x += fx * boat.speed * dt;
+      boat.z += fz * boat.speed * dt;
       collide();
-
-      // Всплеск, когда лопасти входят в воду.
       if (rowing && Math.floor(prev / 6.283) !== Math.floor(boat.phase / 6.283)) {
-        for (const side of [-1, 1]) {
-          const ox = Math.cos(boat.yaw) * side * 2.4, oz = -Math.sin(boat.yaw) * side * 2.4;
-          ripple(boat.x + ox, boat.z + oz, 2.6, 2.2, 0, 0, 0.55);
-        }
-        boat.lastSplash = clock.value;
+        for (const side of [-1, 1]) ripple(boat.x + fz * side * 2.4, boat.z - fx * side * 2.4, 2.6, 2.2, 0, 0, 0.6);
         onSplash(Math.min(1, 0.4 + Math.abs(boat.speed) / 5));
       }
-      // Усы от носа на ходу.
       wakeTimer -= dt;
       if (Math.abs(boat.speed) > 0.6 && wakeTimer <= 0) {
-        wakeTimer = 0.32;
-        const sx = -Math.sin(boat.yaw), sz = -Math.cos(boat.yaw);
-        const px = Math.cos(boat.yaw), pz = -Math.sin(boat.yaw);
-        for (const side of [-1, 1]) {
-          ripple(boat.x + sx * 1.6 + px * side * 0.5, boat.z + sz * 1.6 + pz * side * 0.5, 1.2 + Math.random() * 0.6, 2.4,
-            px * side * 1.1 * Math.min(1, boat.speed / 3), pz * side * 1.1 * Math.min(1, boat.speed / 3), 0.35 * Math.min(1, boat.speed / 3));
-        }
+        wakeTimer = 0.3;
+        const k = Math.min(1, boat.speed / 3);
+        for (const side of [-1, 1]) ripple(boat.x + fx * 1.6 + fz * side * 0.5, boat.z + fz * 1.6 - fx * side * 0.5, 1.2 + rnd() * 0.6, 2.4, fz * side * 1.1 * k, -fx * side * 1.1 * k, 0.4 * k);
       }
-
       const t = clock.value;
-      player.g.position.set(boat.x, Math.sin(t * 1.4) * 0.05 - 0.02, boat.z);
-      player.g.rotation.set(Math.sin(t * 1.1) * 0.025 - boat.speed * 0.01, boat.yaw, Math.sin(t * 0.9) * 0.03 + boat.turn * 0.05, 'YXZ');
+      player.root.position.set(boat.x, 0.23 + Math.sin(t * 1.4) * 0.05, boat.z);
+      player.root.rotation.set(Math.sin(t * 1.1) * 0.025 + boat.speed * 0.01, boat.yaw, Math.sin(t * 0.9) * 0.03 - boat.turn * 0.05);
       poseOars(player, boat.phase, 0.25 + 0.75 * boat.rowing);
-      waterUni.uBoat.value.set(boat.x, boat.z, Math.min(1, Math.abs(boat.speed) / 3), 0);
+      boatPos.set(boat.x, 0, boat.z);
     }
 
-    /* ---------- камера ---------- */
-
-    const camPos = new THREE.Vector3();
-    const camLook = new THREE.Vector3();
     function updateCamera(dt, snap) {
-      if (!orbit.drag) orbit.yaw *= Math.exp(-dt * 0.35);   // камера сама возвращается за корму
-      const a = boat.yaw + orbit.yaw;
-      const horiz = Math.cos(orbit.pitch) * orbit.dist;
-      const want = new THREE.Vector3(boat.x + Math.sin(a) * horiz, 1.2 + Math.sin(orbit.pitch) * orbit.dist, boat.z + Math.cos(a) * horiz);
-      want.y = Math.max(0.8, want.y);
-      const look = new THREE.Vector3(boat.x - Math.sin(boat.yaw) * 2.5, 1.4, boat.z - Math.cos(boat.yaw) * 2.5);
-      if (snap) { camPos.copy(want); camLook.copy(look); }
-      camPos.lerp(want, 1 - Math.exp(-dt * 4));
-      camLook.lerp(look, 1 - Math.exp(-dt * 6));
-      cam.position.copy(camPos);
-      cam.lookAt(camLook);
-      cam.updateMatrixWorld();
-      sky.position.copy(cam.position);
+      const target = V3(boat.x + Math.sin(boat.yaw) * 2.5, 1.4, boat.z + Math.cos(boat.yaw) * 2.5);
+      if (snap) cam.target.copyFrom(target); else cam.target = B.Vector3.Lerp(cam.target, target, 1 - Math.exp(-dt * 6));
+      if (snap || clock.value - lastTouch > 1.5) {
+        const behind = Math.atan2(-Math.cos(boat.yaw), -Math.sin(boat.yaw));
+        let d = Math.atan2(Math.sin(behind - cam.alpha), Math.cos(behind - cam.alpha));
+        cam.alpha += snap ? d : d * (1 - Math.exp(-dt * 1.5));
+      }
     }
 
     /* ---------- живые огни ---------- */
@@ -1671,93 +1514,92 @@ function boot(imgGate, imgCity) {
       poolTimer -= dt;
       if (poolTimer <= 0) {
         poolTimer = 0.3;
+        const me = V3(boat.x, 1, boat.z);
         const near = sources
-          .map(s => ({ s, d: s.pos.distanceToSquared(player.g.position) / (s.kind === 'fire' ? 3 : s.kind === 'window' ? 0.4 : 1) }))
-          .sort((a, b) => a.d - b.d)
-          .slice(0, POOL);
-        pool.forEach((l, i) => { l.userData.src = near[i] ? near[i].s : null; if (l.userData.src) l.position.copy(l.userData.src.pos); });
+          .map(s => ({ s, d: B.Vector3.DistanceSquared(s.pos, me) / (s.kind === 'fire' ? 3 : s.kind === 'window' ? 0.4 : 1) }))
+          .sort((a, b) => a.d - b.d).slice(0, POOL);
+        pool.forEach((l, i) => { l.src = near[i] ? near[i].s : null; if (l.src) l.position.copyFrom(l.src.pos); });
       }
       for (const l of pool) {
-        const s = l.userData.src;
+        const s = l.src;
         if (!s) { l.intensity = 0; continue; }
         const flick = s.kind === 'fire'
           ? 0.75 + 0.25 * Math.sin(t * 9 + s.phase) * Math.sin(t * 13.7 + s.phase * 2)
           : 0.95 + 0.05 * Math.sin(t * 7 + s.phase);
-        l.intensity = (s.kind === 'fire' ? 80 : s.kind === 'window' ? 14 : 32) * flick;
-        l.distance = s.kind === 'fire' ? 18 : 12;
-        l.color.setHex(s.kind === 'window' ? 0xffb070 : 0xffa058);
+        l.intensity = (s.kind === 'fire' ? 3.2 : s.kind === 'window' ? 0.8 : 1.6) * flick;
+        l.range = s.kind === 'fire' ? 20 : 13;
       }
-      for (const f of fires) f.glow.material.opacity = 0.45 + 0.15 * Math.sin(t * 11 + f.pos.x);
-      for (const p of people) p.g.scale.y = p.h * (1 + Math.sin(t * 0.9 + p.phase) * 0.008);
-      for (const b of moored) b.g.position.y = Math.sin(t * 1.2 + b.phase) * 0.04 - 0.02;
+      for (const p of people) p.m.scaling.y = 1 + Math.sin(t * 0.9 + p.phase) * 0.008;
+      for (const b of moored) b.root.position.y = 0.23 + Math.sin(t * 1.2 + b.phase) * 0.04;
     }
 
-    /* ---------- кадр ---------- */
+    /* ---------- обработка кадра: свечение, тональная кривая, виньетка, зерно ---------- */
 
-    const up = new THREE.Vector3(), target = new THREE.Vector3(), fwdV = new THREE.Vector3();
-    const clip = [new THREE.Plane(new THREE.Vector3(0, 1, 0), 0.02)];
-    function render(renderer) {
-      // Зеркальная камера под водой: те же оптика и взгляд, отражённые относительно y = 0.
-      mirrorCam.copy(cam);
-      mirrorCam.position.set(cam.position.x, -cam.position.y, cam.position.z);
-      cam.getWorldDirection(fwdV);
-      target.copy(cam.position).add(fwdV);
-      target.y = -target.y;
-      up.set(0, 1, 0).applyQuaternion(cam.quaternion);
-      up.y = -up.y;
-      mirrorCam.up.copy(up);
-      mirrorCam.lookAt(target);
-      mirrorCam.updateMatrixWorld();
-      texMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
-      texMatrix.multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse);
-      sky.position.copy(mirrorCam.position);
-      water.visible = ripMesh.visible = false;
-      renderer.clippingPlanes = clip;
-      renderer.setRenderTarget(reflRT);
-      renderer.render(scene, mirrorCam);
-      renderer.setRenderTarget(null);
-      renderer.clippingPlanes = [];
-      water.visible = ripMesh.visible = true;
-      sky.position.copy(cam.position);
-      waterUni.uCamPos.value.copy(cam.position);
-      renderer.render(scene, cam);
-    }
-
-    function fit(w, h, pr) {
-      cam.aspect = w / h;
-      // На вертикальном экране шире угол, иначе по бокам почти ничего не видно.
-      cam.fov = cam.aspect < 1 ? 72 : 55;
-      cam.updateProjectionMatrix();
-      const q = w * h > 1.2e6 ? 0.5 : 0.6;
-      reflRT.setSize(Math.round(w * pr * q), Math.round(h * pr * q));
-      embMat.uniforms.uPx.value = pr * h / 800;
-    }
+    const glow = new B.GlowLayer('glow', scene, { mainTextureSamples: lite ? 1 : 2, blurKernelSize: lite ? 32 : 48 });
+    glow.intensity = 0.5;
+    for (const r of ripplePool) glow.addExcludedMesh(r.m);
+    for (const p of people) glow.addExcludedMesh(p.m);
+    const pipe = new B.DefaultRenderingPipeline('pipe', true, scene, [cam]);
+    pipe.samples = lite ? 1 : 4;
+    pipe.fxaaEnabled = true;
+    pipe.bloomEnabled = true;
+    pipe.bloomThreshold = 0.7;
+    pipe.bloomWeight = 0.3;
+    pipe.bloomKernel = 64;
+    pipe.bloomScale = 0.5;
+    pipe.imageProcessingEnabled = true;
+    pipe.imageProcessing.toneMappingEnabled = true;
+    pipe.imageProcessing.toneMappingType = B.ImageProcessingConfiguration.TONEMAPPING_ACES;
+    pipe.imageProcessing.exposure = 1.6;
+    pipe.imageProcessing.contrast = 1.15;
+    pipe.imageProcessing.vignetteEnabled = true;
+    pipe.imageProcessing.vignetteWeight = 2.2;
+    pipe.imageProcessing.vignetteColor = new B.Color4(0, 0, 0, 0);
+    pipe.grainEnabled = true;
+    pipe.grain.intensity = 7;
+    pipe.grain.animated = true;
 
     let snapNext = true;
+    scene.onBeforeRenderObservable.add(() => {
+      const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
+      skyMat.setFloat('time', clock.value);
+      updateBoat(dt);
+      updateTownBoats(dt);
+      updateRipples(dt);
+      updateLights(dt);
+      updateCamera(dt, snapNext);
+      snapNext = false;
+    });
+
+    let running = false;
     return {
-      scene, cam, fit, render, attach,
-      bells: bellTowers,
-      fires,
-      boatPos: () => player.g.position,
+      canvas, bells: bells.map(v => new THREE.Vector3(v.x, v.y, v.z)), fires,
+      boatPos: () => boatPos,
       set onSplash(f) { onSplash = f; },
       setStick(x, y) { stick.x = x; stick.y = y; },
+      resize() { engine.resize(); },
       enter() {
         active = true;
-        boat.x = 0; boat.z = 36; boat.yaw = 0; boat.speed = 1.2; boat.turn = 0;
-        orbit.yaw = 0; orbit.pitch = 0.28; orbit.dist = 9;
+        Object.assign(boat, { x: 0, z: 36, yaw: Math.PI, speed: 1.2, turn: 0 });
+        cam.radius = 9;
+        cam.beta = 1.33;
         snapNext = true;
+        canvas.style.display = 'block';
+        engine.resize();
+        if (!running) { running = true; engine.runRenderLoop(() => scene.render()); }
       },
-      leave() { active = false; keys.clear(); stick.x = stick.y = 0; },
-      update(dt) {
-        updateBoat(dt);
-        updateTownBoats(dt);
-        updateRipples(dt);
-        updateLights(dt);
-        updateCamera(dt, snapNext);
-        snapNext = false;
+      leave() {
+        active = false;
+        keys.clear();
+        stick.x = stick.y = 0;
+        running = false;
+        engine.stopRenderLoop();
+        canvas.style.display = 'none';
       }
     };
-  })();
+  }
+
+  let world = null;
 
   /* ============================== ЗВУК ============================== */
 
@@ -1952,6 +1794,7 @@ function boot(imgGate, imgCity) {
       creak(2.6 * K);
       setMuffle(5200, 0.4);
       setTimeout(() => peal(5, 0.55), 900 * K);
+      loadBabylon().catch(() => {});
     } else {
       leaves.forEach((l, i) => gsap.to(l.uAngle, { value: 0, duration: 2.2 * K, delay: (1 - i) * 0.15 * K, ease: 'power2.inOut' }));
       gsap.to(gate.uni.uGlow, { value: 0, duration: 2.4 * K, ease: 'power1.inOut' });
@@ -1974,9 +1817,14 @@ function boot(imgGate, imgCity) {
     ui.toggle.hidden = ui.enter.hidden = true;
     ui.legend.classList.remove('on');
     gsap.to(st, { enter: 1, duration: 2.4 * K, ease: 'power2.in' });
-    gsap.to(ui.flash, {
-      opacity: 1, duration: 1.1 * K, delay: 1.3 * K, ease: 'power1.in',
-      onComplete: () => {
+    // Движок догружается под золотой вспышкой, если ещё не успел.
+    const flashed = new Promise(ok => gsap.to(ui.flash, { opacity: 1, duration: 1.1 * K, delay: 1.3 * K, ease: 'power1.in', onComplete: ok }));
+    Promise.all([flashed, loadBabylon()]).then(() => {
+      if (!world) {
+        world = createWorld();
+        world.onSplash = s => noiseBurst(0.22, 650, 0.9, 0.05 + 0.07 * s);
+      }
+      {
         where = 'city';
         world.enter();
         hover = false;
@@ -1997,6 +1845,14 @@ function boot(imgGate, imgCity) {
         setMuffle(9000);
         peal(4, 0.7);
       }
+    }).catch(err => {
+      console.error(err);
+      busy = false;
+      st.enter = 0;
+      gsap.to(ui.flash, { opacity: 0, duration: 0.8 });
+      ui.toggle.hidden = ui.enter.hidden = false;
+      ui.legend.textContent = 'Не удалось загрузить игровой движок. Проверьте интернет и попробуйте ещё раз.';
+      ui.legend.classList.add('on');
     });
   }
   ui.enter.onclick = enterCity;
@@ -2039,7 +1895,7 @@ function boot(imgGate, imgCity) {
       const m = Math.hypot(dx, dy);
       if (m > 1) { dx /= m; dy /= m; }
       knob.style.transform = `translate(${dx * 36}px, ${dy * 36}px)`;
-      world.setStick(dx, -dy);
+      if (world) world.setStick(dx, -dy);
     };
     el.addEventListener('pointerdown', e => {
       id = e.pointerId;
@@ -2054,13 +1910,12 @@ function boot(imgGate, imgCity) {
       if (e.pointerId !== id) return;
       id = null;
       knob.style.transform = '';
-      world.setStick(0, 0);
+      if (world) world.setStick(0, 0);
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
   })();
 
-  world.onSplash = s => noiseBurst(0.22, 650, 0.9, 0.05 + 0.07 * s);
 
   /* ============================== УКАЗАТЕЛЬ ============================== */
 
@@ -2078,7 +1933,6 @@ function boot(imgGate, imgCity) {
   }
 
   const stage = $('#stage');
-  world.attach(stage);
   stage.addEventListener('pointermove', e => {
     look.x = e.clientX / innerWidth * 2 - 1;
     look.y = 1 - e.clientY / innerHeight * 2;
@@ -2104,7 +1958,7 @@ function boot(imgGate, imgCity) {
     const visH = Math.min(IH / 100, (IW / 100) / camera.aspect) * 0.92;
     fitZ = visH / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
     gate.sparkMat.uniforms.uPx.value = renderer.getPixelRatio() * h / 800;
-    world.fit(w, h, renderer.getPixelRatio());
+    if (world) world.resize();
   }
   addEventListener('resize', resize);
   resize();
@@ -2136,7 +1990,7 @@ function boot(imgGate, imgCity) {
     if (crackleTimer <= 0) {
       crackleTimer = 0.08 + Math.random() * 0.45;
       let fd = Infinity;
-      for (const f of world.fires) fd = Math.min(fd, f.pos.distanceTo(me));
+      for (const f of world.fires) fd = Math.min(fd, f.distanceTo(me));
       const v = Math.max(0, 1 - fd / 28);
       if (v > 0.02) noiseBurst(0.04 + Math.random() * 0.05, 1800 + Math.random() * 2500, 2, (0.04 + Math.random() * 0.06) * v);
     }
@@ -2187,9 +2041,8 @@ function boot(imgGate, imgCity) {
       }
       renderer.render(gate.scene, camera);
     } else {
-      world.update(dt);
-      if (soundOn) citySounds(dt);
-      world.render(renderer);
+      // Град рисует Babylon в своём холсте и своём цикле; здесь только звук.
+      if (soundOn && world) citySounds(dt);
     }
   }
 
