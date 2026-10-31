@@ -69,7 +69,10 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:4px}
 .pill:hover{border-color:var(--ember);color:var(--ember)}
 .pill.gold{border-color:var(--ember);color:var(--ember)}
 
-#world{position:fixed;inset:0;width:100%;height:100%;display:none;touch-action:none;outline:none}
+#world{position:fixed;inset:0;width:100%;height:100%;display:none;touch-action:none;outline:none;z-index:1}
+.title,#sound,.foot{z-index:2}
+#oops{position:fixed;left:16px;right:16px;top:calc(110px + env(safe-area-inset-top,0px));z-index:6;margin:0 auto;max-width:560px;padding:12px 16px;border:1px solid #c0583a;background:#1a0c08e6;color:#f3d6c8;font:13px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;border-radius:6px}
+#oops[hidden]{display:none}
 #stick{position:fixed;left:max(24px,env(safe-area-inset-left,0px));bottom:calc(96px + env(safe-area-inset-bottom,0px));
   width:124px;height:124px;border-radius:50%;border:1px solid var(--line);background:#060b1066;backdrop-filter:blur(6px);touch-action:none;z-index:3}
 #stick i{position:absolute;left:50%;top:50%;width:50px;height:50px;margin:-25px;border-radius:50%;background:#e7b56a40;border:1px solid var(--ember)}
@@ -113,6 +116,7 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:4px}
 
 <div id="stick" hidden aria-label="Джойстик: грести и поворачивать"><i></i></div>
 <div id="flash"></div>
+<div id="oops" role="alert" hidden></div>
 <div id="veil">КИТЕЖ</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.min.js"></script>
@@ -125,6 +129,16 @@ const PEOPLE_IMG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAngAAAGACAYAAA
 
 const $ = s => document.querySelector(s);
 const veil = $('#veil');
+
+// Если в браузере что-то падает, текст ошибки виден на экране — его можно прислать.
+function showError(msg) {
+  const el = document.getElementById('oops');
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = ('Ошибка: ' + msg).slice(0, 600) + (el.textContent ? '\n' + el.textContent : '');
+}
+addEventListener('error', e => showError((e.message || 'неизвестная') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : '')));
+addEventListener('unhandledrejection', e => showError(String(e.reason && e.reason.message || e.reason)));
 
 function fail(msg) {
   veil.classList.remove('gone');
@@ -538,11 +552,12 @@ function boot(imgGate, imgCity) {
     const canvas = document.createElement('canvas');
     canvas.id = 'world';
     canvas.setAttribute('aria-label', 'Ночной град на воде. Лодкой управляют клавиши W A S D или джойстик.');
-    document.body.insertBefore(canvas, document.body.children[1]);
+    document.getElementById('stage').after(canvas);   // сразу после сцены дверей и поверх неё
 
     // На телефонах облегчаем: меньше пикселей, отражения в половинном разрешении, без мультисэмплинга.
     const lite = matchMedia('(pointer: coarse)').matches;
     const engine = new B.Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false }, true);
+    B.Logger.OnNewCacheEntry = entry => { if (/error/i.test(entry) && /BJS/.test(entry)) showError(entry.replace(/<[^>]+>/g, '').slice(0, 300)); };
     engine.setHardwareScalingLevel(1 / Math.min(devicePixelRatio, lite ? 1.25 : 1.5));
     const scene = new B.Scene(engine);
     const FOG = new B.Color3(0.075, 0.105, 0.135);
@@ -556,7 +571,7 @@ function boot(imgGate, imgCity) {
     const MOON_DIR = V3(0.3, 0.42, -0.86).normalize();   // направление НА луну
     const PLAT_Y = 0.8;
     const LAKE = { x: 0, z: -60, r: 128 };
-    const MAXL = 12;
+    const MAXL = 8;
 
     let seed = 20261031;
     const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -768,7 +783,7 @@ function boot(imgGate, imgCity) {
 
     // Тёплых источников много, а настоящих ламп — несколько ближайших к лодке.
     const sources = [];
-    const POOL = 6;
+    const POOL = 4;
     const pool = Array.from({ length: POOL }, (_, i) => {
       const l = new B.PointLight('warm' + i, V3(0, -50, 0), scene);
       l.diffuse = new B.Color3(1, 0.62, 0.32);
@@ -1586,7 +1601,14 @@ function boot(imgGate, imgCity) {
         snapNext = true;
         canvas.style.display = 'block';
         engine.resize();
-        if (!running) { running = true; engine.runRenderLoop(() => scene.render()); }
+        if (!running) {
+          running = true;
+          let failed = false;
+          engine.runRenderLoop(() => {
+            try { scene.render(); }
+            catch (err) { if (!failed) { failed = true; showError('город не отрисовался: ' + err.message); } }
+          });
+        }
       },
       leave() {
         active = false;
@@ -1829,6 +1851,7 @@ function boot(imgGate, imgCity) {
         world.enter();
         hover = false;
         $('#stage').classList.remove('hot');
+        $('#stage').style.visibility = 'hidden';   // сцена дверей не должна перекрывать город
         ui.subtitle.textContent = 'Невидимый град';
         ui.legend.textContent = CITY_LEGEND;
         gsap.to(ui.flash, {
@@ -1867,6 +1890,7 @@ function boot(imgGate, imgCity) {
       opacity: 1, duration: 1.1 * K, ease: 'power1.in',
       onComplete: () => {
         where = 'gate';
+        $('#stage').style.visibility = '';
         st.enter = 0.75;
         ui.subtitle.textContent = 'Невидимый град на озере Светлояр';
         ui.legend.textContent = GATE_LEGEND;
